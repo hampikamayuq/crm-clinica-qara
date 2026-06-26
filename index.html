@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="CRM leve para clinicas com leads, inbox, agenda e financeiro, sem prontuario."
+    />
+    <meta property="og:title" content="CliniQara CRM" />
+    <meta
+      property="og:description"
+      content="MVP funcional para atendimento, agenda e financeiro de clinicas."
+    />
+    <meta property="og:type" content="website" />
+    <meta name="theme-color" content="#0e766e" />
+    <title>CliniQara CRM</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="demo-strip">
+      <span aria-hidden="true">●</span>
+      Ambiente demonstrativo com dados ficticios
+      <span aria-hidden="true">●</span>
+    </div>
+
+    <div class="app-shell">
+      <aside class="sidebar" id="sidebar">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true">Q</div>
+          <div>
+            <div class="brand-name">CliniQara</div>
+            <div class="brand-subtitle">CRM sem prontuario</div>
+          </div>
+        </div>
+
+        <nav class="nav" aria-label="Principal">
+          <button class="nav-item active" type="button" data-view="dashboard">
+            <span aria-hidden="true">◆</span>
+            Hoje
+          </button>
+          <button class="nav-item" type="button" data-view="inbox">
+            <span aria-hidden="true">◒</span>
+            Inbox
+          </button>
+          <button class="nav-item" type="button" data-view="leads">
+            <span aria-hidden="true">▦</span>
+            Funil
+          </button>
+          <button class="nav-item" type="button" data-view="agenda">
+            <span aria-hidden="true">◧</span>
+            Agenda
+          </button>
+          <button class="nav-item" type="button" data-view="financeiro">
+            <span aria-hidden="true">◈</span>
+            Financeiro
+          </button>
+          <button class="nav-item" type="button" data-view="channels">
+            <span aria-hidden="true">◎</span>
+            Canais
+          </button>
+          <button class="nav-item" type="button" data-view="bots">
+            <span aria-hidden="true">⌁</span>
+            Bots
+          </button>
+          <button class="nav-item" type="button" data-view="config">
+            <span aria-hidden="true">⚙</span>
+            Dados
+          </button>
+        </nav>
+
+        <div class="assistant-card">
+          <div class="assistant-avatar" id="assistant-avatar" aria-hidden="true">T</div>
+          <div>
+            <div class="assistant-name" id="assistant-name">Tawany</div>
+            <div class="assistant-status">automacao ativa</div>
+          </div>
+        </div>
+      </aside>
+
+      <div class="sidebar-backdrop" id="sidebar-backdrop" hidden></div>
+
+      <main class="workspace">
+        <header class="topbar">
+          <button class="icon-button mobile-only" type="button" data-action="toggle-menu" aria-label="Abrir menu">
+            ☰
+          </button>
+          <div>
+            <h1 id="page-title">Hoje</h1>
+            <p id="page-kicker">Operacao comercial da clinica</p>
+          </div>
+          <div class="topbar-actions">
+            <button class="ghost-button" type="button" data-action="export-data">
+              <span aria-hidden="true">⇩</span>
+              Exportar
+            </button>
+            <button class="primary-button" type="button" data-action="new-lead">
+              <span aria-hidden="true">＋</span>
+              Lead
+            </button>
+          </div>
+        </header>
+
+        <section id="app" class="view-root" aria-live="polite"></section>
+      </main>
+    </div>
+
+    <div id="modal-root"></div>
+    <div id="toast-root" class="toast-root" aria-live="polite" aria-atomic="true"></div>
+    <script src="./flows/leads-novos.bot.js"></script>
+    <script src="./app.js" defer></script>
+  </body>
+</html>
