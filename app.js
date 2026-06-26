@@ -1,4 +1,5 @@
 const STORAGE_KEY = "cliniqara-crm-v4";
+const ADMIN_KEY_STORAGE = "cliniqara-admin-api-key";
 
 const stages = [
   { id: "entrada", label: "Entrada", tone: "blue" },
@@ -618,7 +619,9 @@ function renderChannels() {
         </div>
         <div class="setup-list">
           ${renderSetupItem("Rodar servidor", status?.ok, "npm start")}
+          ${renderSetupItem("Proteger API interna", configured.adminApi || status?.security?.apiAuth === "local_dev_only", "ADMIN_API_KEY")}
           ${renderSetupItem("Configurar META_VERIFY_TOKEN", configured.verifyToken, ".env")}
+          ${renderSetupItem("Validar assinatura do webhook", configured.appSecret, "META_APP_SECRET")}
           ${renderSetupItem("Configurar WhatsApp", configured.whatsapp, "WHATSAPP_ACCESS_TOKEN + WHATSAPP_PHONE_NUMBER_ID")}
           ${renderSetupItem("Configurar Instagram", configured.instagram, "INSTAGRAM_PAGE_ACCESS_TOKEN")}
           ${renderSetupItem("Configurar agente OpenAI", configured.openai, "AI_PROVIDER=openai + OPENAI_API_KEY")}
@@ -1471,9 +1474,25 @@ async function receivePatientMessage() {
   toast(result ? `${via} respondeu.` : "Mensagem recebida sem regra automatica.");
 }
 
+async function apiFetch(path, options = {}, retry = true) {
+  const headers = new Headers(options.headers || {});
+  const key = sessionStorage.getItem(ADMIN_KEY_STORAGE) || "";
+  if (key && !headers.has("x-admin-api-key")) headers.set("x-admin-api-key", key);
+
+  const response = await fetch(path, { ...options, headers });
+  if (response.status !== 401 || !retry) return response;
+
+  sessionStorage.removeItem(ADMIN_KEY_STORAGE);
+  const nextKey = window.prompt("Digite a ADMIN_API_KEY configurada no servidor:");
+  if (!nextKey) return response;
+
+  sessionStorage.setItem(ADMIN_KEY_STORAGE, nextKey.trim());
+  return apiFetch(path, options, false);
+}
+
 async function runServerAgentForLead(lead, text) {
   try {
-    const response = await fetch("/api/agent/test", {
+    const response = await apiFetch("/api/agent/test", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -1533,7 +1552,7 @@ function applyAgentActionsToLead(lead, actions) {
 async function sendExternalMessage(lead, text) {
   if (!lead?.channel || !lead.externalId || !["whatsapp", "instagram"].includes(lead.channel)) return false;
   try {
-    const response = await fetch("/api/messages/send", {
+    const response = await apiFetch("/api/messages/send", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ channel: lead.channel, externalId: lead.externalId, text }),
@@ -1555,7 +1574,7 @@ async function refreshIntegrationStatus(force = false) {
   if (!force && (ui.integrationStatus || ui.integrationLoading)) return;
   ui.integrationLoading = true;
   try {
-    const response = await fetch("/api/integrations/status");
+    const response = await apiFetch("/api/integrations/status");
     if (!response.ok) throw new Error("status_unavailable");
     ui.integrationStatus = await response.json();
     ui.integrationError = "";
@@ -1570,7 +1589,7 @@ async function refreshIntegrationStatus(force = false) {
 
 async function syncExternalConversations() {
   try {
-    const response = await fetch("/api/conversations");
+    const response = await apiFetch("/api/conversations");
     if (!response.ok) throw new Error("sync_failed");
     const data = await response.json();
     const conversations = data.conversations || [];
@@ -1748,7 +1767,7 @@ async function sendAgentTestMessage() {
   render();
 
   try {
-    const response = await fetch("/api/agent/test", {
+    const response = await apiFetch("/api/agent/test", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({

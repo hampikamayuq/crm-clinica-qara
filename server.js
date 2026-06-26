@@ -1,7 +1,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { createReadStream, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, createReadStream, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
-import { extname, join, normalize, resolve } from "node:path";
+import { extname, isAbsolute, join, normalize, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
@@ -14,6 +14,9 @@ const port = Number(process.env.PORT || 3000);
 const graphVersion = process.env.META_GRAPH_VERSION || "v23.0";
 const aiProvider = (process.env.AI_PROVIDER || "rules").toLowerCase();
 const openAIModel = process.env.OPENAI_MODEL || "gpt-4.1-mini";
+const isProduction = process.env.NODE_ENV === "production";
+const adminApiKey = process.env.ADMIN_API_KEY || "";
+let storeOperationQueue = Promise.resolve();
 const clinicConfig = {
   name: process.env.CLINIC_NAME || "Clinica Qara",
   unit: process.env.CLINIC_UNIT || "Copacabana - RJ",
@@ -396,6 +399,11 @@ const server = createServer(async (req, res) => {
       return receiveWebhook(req, res);
     }
 
+    if (url.pathname.startsWith("/api/") && url.pathname !== "/api/health") {
+      const auth = authorizeApiRequest(req);
+      if (!auth.ok) return json(res, auth.status, { ok: false, error: auth.error });
+    }
+
     if (url.pathname === "/api/integrations/status" && req.method === "GET") {
       return json(res, 200, integrationStatus(req));
     }
@@ -462,17 +470,21 @@ async function receiveWebhook(req, res) {
 
   const payload = JSON.parse(rawBody || "{}");
   const incoming = extractIncomingMessages(payload);
-  const store = readStore();
-  const automationResults = [];
+  const result = await withStoreLock(async () => {
+    const store = readStore();
+    const automationResults = [];
 
-  for (const message of incoming) {
-    upsertConversationMessage(store, message);
-    const replies = await runAutomations(message, store);
-    automationResults.push(...replies);
-  }
+    for (const message of incoming) {
+      upsertConversationMessage(store, message);
+      const replies = await runAutomations(message, store);
+      automationResults.push(...replies);
+    }
 
-  writeStore(store);
-  return json(res, 200, { ok: true, received: incoming.length, automated: automationResults.length });
+    if (incoming.length) writeStore(store);
+    return { received: incoming.length, automated: automationResults.length };
+  });
+
+  return json(res, 200, { ok: true, ...result });
 }
 
 function extractIncomingMessages(payload) {
@@ -950,9 +962,15 @@ async function sendAndStoreMessage(input, existingStore = null, options = {}) {
   outbound.delivery = sendResult.ok ? "sent" : "not_sent";
   outbound.metadata = { ...outbound.metadata, sendResult };
 
-  const store = existingStore || readStore();
-  upsertConversationMessage(store, outbound);
-  if (!existingStore) writeStore(store);
+  if (existingStore) {
+    upsertConversationMessage(existingStore, outbound);
+  } else {
+    await withStoreLock(async () => {
+      const store = readStore();
+      upsertConversationMessage(store, outbound);
+      writeStore(store);
+    });
+  }
 
   return { ok: sendResult.ok, message: outbound, provider: sendResult };
 }
@@ -1054,6 +1072,15 @@ function integrationStatus(req) {
       whatsapp: Boolean(process.env.WHATSAPP_ACCESS_TOKEN && process.env.WHATSAPP_PHONE_NUMBER_ID),
       instagram: Boolean(process.env.INSTAGRAM_PAGE_ACCESS_TOKEN),
       openai: Boolean(process.env.OPENAI_API_KEY),
+      adminApi: Boolean(adminApiKey),
+    },
+    security: {
+      apiAuth: adminApiKey ? "enabled" : isLocalRequest(req) && !isProduction ? "local_dev_only" : "blocked_without_admin_key",
+      webhookSignature: process.env.META_APP_SECRET
+        ? "enabled"
+        : isUnsignedWebhookAllowed(req)
+          ? "local_dev_or_explicit"
+          : "blocked_without_app_secret",
     },
     agent: {
       provider: aiProvider,
@@ -1065,6 +1092,64 @@ function integrationStatus(req) {
     conversations: Object.keys(store.conversations).length,
     messages: Object.values(store.conversations).reduce((sum, conversation) => sum + conversation.messages.length, 0),
   };
+}
+
+function authorizeApiRequest(req) {
+  if (adminApiKey) {
+    const headerKey = clean(req.headers["x-admin-api-key"]);
+    const auth = clean(req.headers.authorization);
+    const bearerKey = auth.toLowerCase().startsWith("bearer ") ? auth.slice(7).trim() : "";
+    if (safeStringEqual(headerKey, adminApiKey) || safeStringEqual(bearerKey, adminApiKey)) {
+      return { ok: true };
+    }
+    return { ok: false, status: 401, error: "admin_api_key_invalid" };
+  }
+
+  if (process.env.ALLOW_UNAUTHENTICATED_API === "true" || (!isProduction && isLocalRequest(req))) {
+    return { ok: true };
+  }
+
+  return { ok: false, status: 503, error: "admin_api_key_required" };
+}
+
+function isUnsignedWebhookAllowed(req) {
+  return process.env.ALLOW_UNSIGNED_WEBHOOKS === "true" || (!isProduction && isLocalRequest(req));
+}
+
+function isLocalRequest(req) {
+  const host = String(req.headers.host || "").toLowerCase();
+  const remote = String(req.socket?.remoteAddress || "").toLowerCase();
+  return (
+    host.startsWith("localhost:") ||
+    host === "localhost" ||
+    host.startsWith("127.0.0.1:") ||
+    host === "127.0.0.1" ||
+    host.startsWith("[::1]:") ||
+    remote === "::1" ||
+    remote === "127.0.0.1" ||
+    remote === "::ffff:127.0.0.1"
+  );
+}
+
+function safeStringEqual(a, b) {
+  const left = Buffer.from(String(a || ""));
+  const right = Buffer.from(String(b || ""));
+  return left.length === right.length && timingSafeEqual(left, right);
+}
+
+function withStoreLock(operation) {
+  const run = storeOperationQueue.then(operation, operation);
+  storeOperationQueue = run.catch(() => {});
+  return run;
+}
+
+function ensureDataDir() {
+  if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+  try {
+    chmodSync(dataDir, 0o700);
+  } catch {
+    // Best effort: alguns hosts nao permitem alterar permissao de diretorio.
+  }
 }
 
 function loadBots() {
@@ -1095,7 +1180,7 @@ function cleanBotText(text) {
 }
 
 function readStore() {
-  if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
+  ensureDataDir();
   if (!existsSync(storeFile)) return { conversations: {} };
   try {
     const parsed = JSON.parse(readFileSync(storeFile, "utf8"));
@@ -1106,13 +1191,20 @@ function readStore() {
 }
 
 function writeStore(store) {
-  if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
-  writeFileSync(storeFile, `${JSON.stringify(store, null, 2)}\n`);
+  ensureDataDir();
+  const tmpFile = join(dataDir, `.channel-conversations.${process.pid}.${Date.now()}.tmp`);
+  writeFileSync(tmpFile, `${JSON.stringify(store, null, 2)}\n`, { mode: 0o600 });
+  renameSync(tmpFile, storeFile);
+  try {
+    chmodSync(storeFile, 0o600);
+  } catch {
+    // Best effort: alguns filesystems gerenciados ignoram chmod.
+  }
 }
 
 function isValidSignature(req, rawBody) {
   const secret = process.env.META_APP_SECRET;
-  if (!secret) return true;
+  if (!secret) return isUnsignedWebhookAllowed(req);
 
   const signature = req.headers["x-hub-signature-256"];
   if (!signature || !signature.startsWith("sha256=")) return false;
@@ -1128,8 +1220,9 @@ function isValidSignature(req, rawBody) {
 function serveStatic(pathname, res) {
   const requested = pathname === "/" ? "/index.html" : pathname;
   const filePath = normalize(resolve(join(rootDir, requested)));
+  const relativePath = relative(rootDir, filePath);
 
-  if (!filePath.startsWith(rootDir) || !existsSync(filePath)) {
+  if (relativePath.startsWith("..") || isAbsolute(relativePath) || !existsSync(filePath)) {
     res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
     res.end("Not found");
     return;

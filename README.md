@@ -32,17 +32,18 @@ Para publicar apenas como app estatico, envie estes arquivos para qualquer hospe
 3. Para WhatsApp Cloud API, preencha `WHATSAPP_ACCESS_TOKEN` e `WHATSAPP_PHONE_NUMBER_ID`.
 4. Para Instagram DM, preencha `INSTAGRAM_PAGE_ACCESS_TOKEN`.
 5. Para agente OpenAI, preencha `AI_PROVIDER=openai`, `OPENAI_API_KEY` e, se quiser, `OPENAI_MODEL`.
-6. Rode:
+6. Para publicar em URL publica, preencha tambem `ADMIN_API_KEY` e `META_APP_SECRET`.
+7. Rode:
 
 ```bash
 npm start
 ```
 
-7. Abra `http://localhost:3000`.
-8. Na aba Canais, copie a URL `/webhooks/meta`.
-9. No painel da Meta, use essa URL como Callback URL e o mesmo `META_VERIFY_TOKEN`.
+8. Abra `http://localhost:3000`.
+9. Na aba Canais, copie a URL `/webhooks/meta`.
+10. No painel da Meta, use essa URL como Callback URL e o mesmo `META_VERIFY_TOKEN`.
 
-Para receber webhooks reais, a URL precisa estar publica em HTTPS. Em desenvolvimento, use ngrok, Cloudflare Tunnel ou equivalente apontando para `localhost:3000`.
+Para receber webhooks reais, a URL precisa estar publica em HTTPS. Em desenvolvimento, use ngrok, Cloudflare Tunnel ou equivalente apontando para `localhost:3000`. O endpoint `POST /webhooks/meta` valida `X-Hub-Signature-256` quando `META_APP_SECRET` esta configurado; sem esse segredo, webhooks sem assinatura so passam em localhost ou com `ALLOW_UNSIGNED_WEBHOOKS=true`.
 
 Endpoints criados:
 
@@ -51,10 +52,13 @@ Endpoints criados:
 - `GET /api/integrations/status`: status da configuracao.
 - `GET /api/conversations`: conversas recebidas por webhook.
 - `POST /api/messages/send`: envio de resposta pelo canal original.
+- `POST /api/agent/test`: teste do agente OpenAI pela aba Bots.
+
+As rotas `/api/*` usam `ADMIN_API_KEY` em URL publica. A UI envia essa chave pelo header `x-admin-api-key` depois que voce informa a chave no prompt do navegador. Em localhost, a chave pode ficar vazia para facilitar o desenvolvimento.
 
 ## Proximo passo para producao
 
-Substituir `localStorage` e `data/channel-conversations.json` por banco de dados e adicionar autenticacao. A estrutura atual ja separa os dominios principais: leads, mensagens, bots, canais, agenda e financeiro.
+Substituir `localStorage` e `data/channel-conversations.json` por banco de dados com backup e politica de retencao. O arquivo JSON atual ja usa escrita atomica, permissao restrita e fila simples de escrita para reduzir perda de mensagens no MVP.
 
 ## Bots
 
