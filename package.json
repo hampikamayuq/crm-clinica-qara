@@ -5,10 +5,23 @@
   "type": "module",
   "scripts": {
     "start": "node server.js",
+    "dev": "node server.js",
     "test": "node --test",
-    "check": "node --check app.js && node --check server.js && node --check flows/leads-novos.bot.js"
+    "check": "node --check app.js && node --check server.js && node --check flows/leads-novos.bot.js",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev",
+    "prisma:seed": "node prisma/seed.js",
+    "db:push": "prisma db push",
+    "db:studio": "prisma studio"
+  },
+  "prisma": {
+    "seed": "node prisma/seed.js"
   },
   "engines": {
     "node": ">=20"
+  },
+  "dependencies": {
+    "@prisma/client": "^5.22.0",
+    "prisma": "^5.22.0"
   }
 }

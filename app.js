@@ -9,12 +9,41 @@ const stages = [
   { id: "fechado", label: "Fechado", tone: "green" },
 ];
 
-const professionals = ["Dra. Helena Martins", "Dr. Ricardo Almeida", "Carla Souza"];
+// Mapeamento de etapas UI <-> banco (LeadStage). Usado no cutover de Leads.
+const STAGE_UI_TO_DB = {
+  entrada: "NEW",
+  qualificacao: "CONTACTED",
+  proposta: "BUDGET_SENT",
+  agendado: "APPOINTMENT_SCHEDULED",
+  fechado: "ATTENDED",
+};
+const STAGE_DB_TO_UI = {
+  NEW: "entrada",
+  CONTACTED: "qualificacao",
+  WAITING_PATIENT: "qualificacao",
+  REACTIVATE: "qualificacao",
+  BUDGET_SENT: "proposta",
+  APPOINTMENT_SCHEDULED: "agendado",
+  PROCEDURE_SCHEDULED: "agendado",
+  ATTENDED: "fechado",
+  LOST: "entrada",
+};
+
+const professionals = [
+  "Dr. Diego Galvez",
+  "Dr. Miguel Ceccarelli",
+  "Dra. Diana Stohmann",
+  "Dra. Manuela Pedretti Cabral",
+  "Dr. Fabricio de Andrade",
+];
+// Mapa nome -> id do profissional no banco (preenchido por hydrateProfessionalsFromDb).
+const professionalDbIdByName = {};
 const times = ["08:00", "09:00", "10:00", "11:00", "14:00", "15:00", "16:00"];
 const pageTitles = {
   dashboard: ["Hoje", "Operacao comercial da clinica"],
   inbox: ["Inbox", "Conversas, respostas e agendamentos"],
   leads: ["Funil", "Leads ate virarem consultas"],
+  operations: ["Operacao", "Briefing, follow-ups e importacao"],
   agenda: ["Agenda", "Horarios e confirmacoes"],
   financeiro: ["Financeiro", "Recebimentos sem prontuario"],
   channels: ["Canais", "WhatsApp API e Instagram"],
@@ -30,6 +59,14 @@ let ui = {
   selectedLeadId: state.leads[0]?.id || "",
   leadSearch: "",
   inboxSearch: "",
+  inbox: { list: null, selectedId: null, messages: [], loading: false },
+  waMode: "text",
+  selectedVisualBotId: "",
+  funnelView: "kanban",
+  triageRows: null,
+  triageFilter: { pipeline: "", prioridade: "", temperatura: "" },
+  clinicalPipeline: "1-unhas",
+  ops: { briefing: null, pipeline: null, followups: null, loading: false, error: "" },
   agendaDate: todayISO(),
   financeFilter: "todos",
   integrationStatus: null,
@@ -42,6 +79,9 @@ if (!pageTitles[ui.view]) ui.view = "dashboard";
 document.addEventListener("DOMContentLoaded", () => {
   bindEvents();
   render();
+  hydrateLeadsFromDb();
+  hydrateProfessionalsFromDb().then(hydrateAppointmentsFromDb);
+  hydrateBotsFromDb();
 });
 
 function bindEvents() {
@@ -87,6 +127,38 @@ function handleClick(event) {
   if (action === "import-bot") return document.querySelector("#bot-import-file")?.click();
   if (action === "reset-data") return resetData();
   if (action === "select-lead") return selectLead(id);
+  if (action === "set-funnel-view") {
+    ui.funnelView = actionEl.dataset.mode || "kanban";
+    render();
+    return;
+  }
+  if (action === "set-clinical-pipeline") {
+    ui.clinicalPipeline = actionEl.dataset.id || "1-unhas";
+    return render();
+  }
+  if (action === "ops-refresh") return loadOperations(true);
+  if (action === "ops-export-csv") return downloadCsv(actionEl.dataset.type || "leads");
+  if (action === "ops-import-csv") return document.querySelector("#ops-csv-file")?.click();
+  if (action === "ops-recalculate-score") return recalculateLeadScores();
+  if (action === "ops-copy-webhook") return copyText(`${window.location.origin}/api/webhook`, "Webhook copiado.");
+  if (action === "open-search-result") return openSearchResult(id);
+  if (action === "select-conversation") return selectInboxConversation(id);
+  if (action === "inbox-reply") return sendInboxReply(id);
+  if (action === "inbox-receive") return receiveInbox(id);
+  if (action === "inbox-resolve") return resolveInboxConversation(id);
+  if (action === "inbox-refresh") { ui.inbox.list = null; return renderInbox(); }
+  if (action === "set-wa-mode") {
+    ui.waMode = actionEl.dataset.mode || "text";
+    return renderInbox();
+  }
+  if (action === "open-conv-from-funnel") {
+    ui.view = "inbox";
+    window.location.hash = "inbox";
+    ui.inbox.list = null;
+    ui.inbox.selectedId = id;
+    render();
+    return loadInboxData().then(() => selectInboxConversation(id));
+  }
   if (action === "next-stage") return moveLead(id, nextStageFor(id));
   if (action === "mark-won") return moveLead(id, "fechado");
   if (action === "open-appointment") return openAppointmentModal(id);
@@ -96,6 +168,21 @@ function handleClick(event) {
   if (action === "send-message") return sendComposedMessage();
   if (action === "receive-patient-message") return receivePatientMessage();
   if (action === "send-template") return sendTemplate(actionEl.dataset.template || "");
+  if (action === "new-wa-template") return openWhatsAppTemplateModal();
+  if (action === "edit-wa-template") return openWhatsAppTemplateModal(id);
+  if (action === "delete-wa-template") return deleteWhatsAppTemplate(id);
+  if (action === "select-template-for-inbox") return useTemplateInInbox(id);
+  if (action === "new-visual-bot") return openVisualBotModal();
+  if (action === "edit-visual-bot") return openVisualBotModal(id);
+  if (action === "select-visual-bot") {
+    ui.selectedVisualBotId = id;
+    return renderBots();
+  }
+  if (action === "add-visual-step") return openVisualStepModal(id, "", actionEl.dataset.after || "");
+  if (action === "edit-visual-step") return openVisualStepModal(actionEl.dataset.botId, id);
+  if (action === "move-visual-step") return moveVisualStep(actionEl.dataset.botId, id, actionEl.dataset.dir);
+  if (action === "delete-visual-step") return deleteVisualStep(actionEl.dataset.botId, id);
+  if (action === "delete-visual-bot") return deleteVisualBot(id);
   if (action === "toggle-bot") return toggleBot(id);
   if (action === "test-bot") return testBot();
   if (action === "agent-test-send") return sendAgentTestMessage();
@@ -117,6 +204,9 @@ function handleSubmit(event) {
   if (form.dataset.form === "appointment") createAppointment(data);
   if (form.dataset.form === "transaction") createTransaction(data);
   if (form.dataset.form === "settings") saveSettings(data);
+  if (form.dataset.form === "wa-template") saveWhatsAppTemplate(data);
+  if (form.dataset.form === "visual-bot") saveVisualBot(data);
+  if (form.dataset.form === "visual-step") saveVisualStep(data);
 }
 
 function handleChange(event) {
@@ -139,11 +229,17 @@ function handleChange(event) {
     ui.financeFilter = target.value;
     render();
   }
+  if (target.matches("#triage-pipeline")) { ui.triageFilter.pipeline = target.value; render(); }
+  if (target.matches("#triage-prioridade")) { ui.triageFilter.prioridade = target.value; render(); }
+  if (target.matches("#triage-temperatura")) { ui.triageFilter.temperatura = target.value; render(); }
   if (target.matches("#import-file")) {
     importData(target.files?.[0]);
   }
   if (target.matches("#bot-import-file")) {
     importBotFile(target.files?.[0]);
+  }
+  if (target.matches("#ops-csv-file")) {
+    importLeadsCsv(target.files?.[0]);
   }
 }
 
@@ -160,6 +256,43 @@ function handleInput(event) {
   // Mantem o que foi digitado no testador de IA sem re-renderizar a cada tecla.
   if (target.matches("#agent-test-input")) ui.agentTest.draft = target.value;
   if (target.matches("#agent-test-name")) ui.agentTest.name = target.value;
+  if (target.matches("#global-search")) runGlobalSearch(target.value);
+}
+
+// Busca global client-side (leads). Atualiza so o dropdown, sem re-render da view.
+function runGlobalSearch(query) {
+  const box = document.querySelector("#global-search-results");
+  if (!box) return;
+  const q = query.trim().toLowerCase();
+  if (!q) {
+    box.hidden = true;
+    box.innerHTML = "";
+    return;
+  }
+  const hits = state.leads
+    .filter((lead) => [lead.name, lead.phone, lead.source, lead.interest].some((f) => (f || "").toLowerCase().includes(q)))
+    .slice(0, 8);
+  box.innerHTML = hits.length
+    ? hits
+        .map(
+          (lead) => `
+        <button type="button" class="search-hit" data-action="open-search-result" data-id="${lead.id}">
+          <span class="avatar sm">${initials(lead.name)}</span>
+          <span class="hit-main"><strong>${escapeHtml(lead.name)}</strong><span class="muted">${escapeHtml(lead.source || "")} · ${escapeHtml(lead.phone || "")}</span></span>
+          <span class="chip ${stageTone(lead.stage)}">${escapeHtml(stageLabel(lead.stage))}</span>
+        </button>`,
+        )
+        .join("")
+    : `<div class="search-empty">Nenhum lead encontrado.</div>`;
+  box.hidden = false;
+}
+
+function openSearchResult(id) {
+  const box = document.querySelector("#global-search-results");
+  if (box) box.hidden = true;
+  const input = document.querySelector("#global-search");
+  if (input) input.value = "";
+  selectLead(id);
 }
 
 function handleDragStart(event) {
@@ -232,6 +365,15 @@ function repairState(saved) {
     }
   });
 
+  if (!Array.isArray(saved.whatsappTemplates) || !saved.whatsappTemplates.length) {
+    saved.whatsappTemplates = defaultWhatsAppTemplates();
+    changed = true;
+  }
+  if (!Array.isArray(saved.visualBots) || !saved.visualBots.length) {
+    saved.visualBots = defaultVisualBots();
+    changed = true;
+  }
+
   // lead() so roda em createInitialState; leads novos usam uid(). Sem counter para manter aqui.
   return changed ? { ...saved } : saved;
 }
@@ -260,8 +402,8 @@ function createInitialState() {
       lead("Beatriz Alves", "+55 81 94444-7711", "Retorno", "Procedimento", "fechado", 5400, "Receber saldo", nextWeek, false),
     ],
     appointments: [
-      appointment("appt-1", "lead-1", "Mariana Costa", "Dra. Helena Martins", tomorrow, "09:00", "Avaliacao", "Confirmado", 750),
-      appointment("appt-2", "lead-5", "Beatriz Alves", "Dra. Helena Martins", today, "10:00", "Procedimento", "Confirmado", 5400),
+      appointment("appt-1", "lead-1", "Mariana Costa", "Dr. Diego Galvez", tomorrow, "09:00", "Avaliacao", "Confirmado", 750),
+      appointment("appt-2", "lead-5", "Beatriz Alves", "Dr. Diego Galvez", today, "10:00", "Procedimento", "Confirmado", 5400),
     ],
     transactions: [
       transaction("tx-1", "Consulta Mariana Costa", "Consulta", 750, tomorrow, "Pendente", "lead-1"),
@@ -274,7 +416,97 @@ function createInitialState() {
       { id: "act-3", time: "09:14", text: "Clara perguntou valor da avaliacao.", tone: "amber" },
     ],
     bots: bundledBots(),
+    whatsappTemplates: defaultWhatsAppTemplates(),
+    visualBots: defaultVisualBots(),
   };
+}
+
+function defaultWhatsAppTemplates() {
+  return [
+    {
+      id: "tpl-google-avaliacao-copa-barra",
+      name: "Google avaliacao copa e barra",
+      templateName: "google_avaliacao_copa_barra",
+      type: "WhatsApp",
+      status: "Aprovado",
+      category: "Marketing",
+      language: "pt_BR",
+      wabaId: "2752806691674234",
+      body:
+        "Olá! Esperamos que sua experiência na Clínica QARA tenha sido ótima 😊\n\nSua avaliação é muito importante para nós e ajuda outras pessoas a escolherem com mais segurança. Leva menos de 1 minuto: é só clicar no botão da sua unidade e deixar sua opinião.\n\nDesde já, muito obrigada pelo seu tempo e confiança!",
+      footer: "",
+      buttons: [
+        { id: "copacabana", title: "Copacabana", url: "https://g.page/r/CUVSOMDyoe_YEBM" },
+        { id: "barra", title: "Barra da Tijuca", url: "https://maps.app.goo.gl/j13M2BkAjb" },
+      ],
+    },
+    {
+      id: "tpl-lembrete-agendamento",
+      name: "Lembrete agendamento",
+      templateName: "lembrete_agendamento",
+      type: "WhatsApp",
+      status: "Aprovado",
+      category: "Utility",
+      language: "pt_BR",
+      wabaId: "2752806691674234",
+      body:
+        "*Olá! Aqui é da Clínica Qara. 😊*\n\nLembrete: sua consulta amanhã às {{1}} com {{2}}.\n\n📍 Rua Santa Clara, 50 - Sala 521, Edifício Golden Point\n\nPodemos confirmar?",
+      footer: "",
+      buttons: [
+        { id: "remarcar", title: "Remarcar" },
+        { id: "cancelar", title: "Cancelar" },
+        { id: "confirmar", title: "Confirmar" },
+      ],
+    },
+    {
+      id: "tpl-mensagem-24h",
+      name: "mensagem 24h",
+      templateName: "mensagem_24h",
+      type: "WhatsApp",
+      status: "Aprovado",
+      category: "Marketing",
+      language: "pt_BR",
+      wabaId: "2752806691674234",
+      body: "Olá! Aqui é da Clínica Qara. Podemos te ajudar a escolher o melhor horário para sua consulta?",
+      footer: "",
+      buttons: [{ id: "agendar", title: "Agendar" }, { id: "humano", title: "Atendente" }],
+    },
+    {
+      id: "tpl-nota-fiscal-24h",
+      name: "Nota fiscal 24h",
+      templateName: "nota_fiscal_24h",
+      type: "WhatsApp",
+      status: "Aprovado",
+      category: "Utility",
+      language: "pt_BR",
+      wabaId: "2752806691674234",
+      body: "Sua nota fiscal está pronta! Caso precise de algum ajuste cadastral, responda esta mensagem.",
+      footer: "",
+      buttons: [],
+    },
+  ];
+}
+
+function defaultVisualBots() {
+  return [
+    {
+      id: "vbot-leads-novos",
+      name: "Leads novos",
+      active: true,
+      trigger: "Qualquer nova conversa",
+      steps: [
+        { id: "step-1", type: "message", title: "Boas-vindas", text: "Olá! Seja bem-vindo(a) à Clínica QARA! Conte conosco para cuidar da sua saúde.", options: [], extra: "" },
+        { id: "step-2", type: "list", title: "Qual área tratar?", text: "Qual área você gostaria de tratar?", options: ["Pele", "Unhas", "Cabelo", "Estética", "Dermatologia infantil", "Cirurgia dermatológica", "Psoríase/Dermatite/Hidradenite", "Outras"], extra: "" },
+        { id: "step-3", type: "condition", title: "Direcionar por área", text: "Encaminha conforme a opção escolhida.", options: [], extra: "unhas, cabelo, cirurgia, pele" },
+        { id: "step-4", type: "message", title: "Apresentar médico", text: "Apresenta o especialista (nome, formação, endereço, horários e valor).", options: [], extra: "" },
+        { id: "step-5", type: "action", title: "Aplicar tag", text: "Marca o lead pela linha de cuidado.", options: [], extra: "Cirurgia" },
+        { id: "step-6", type: "message", title: "Oferecer agenda", text: "Estamos prontos para agendar! Qual dia e horário ficam melhores para você?", options: [], extra: "" },
+        { id: "step-7", type: "pause", title: "Aguardar resposta", text: "Espera o paciente responder.", options: [], extra: "23h" },
+        { id: "step-8", type: "start", title: "Acompanhamento", text: "Inicia bot de follow-up se não houver resposta.", options: [], extra: "Acompanhamento 1 dia sem resposta" },
+        { id: "step-9", type: "handoff", title: "Atendimento humano", text: "Encaminha para a secretária em alertas ou dúvidas fora do fluxo.", options: [], extra: "" },
+      ],
+    },
+  ];
 }
 
 function lead(name, phone, source, interest, stage, value, nextStep, followUp, autoMode) {
@@ -324,6 +556,7 @@ function render() {
   if (ui.view === "dashboard") renderDashboard();
   if (ui.view === "inbox") renderInbox();
   if (ui.view === "leads") renderLeads();
+  if (ui.view === "operations") renderOperations();
   if (ui.view === "agenda") renderAgenda();
   if (ui.view === "financeiro") renderFinanceiro();
   if (ui.view === "channels") renderChannels();
@@ -351,9 +584,25 @@ function renderDashboard() {
   const todayAppointments = state.appointments.filter((appt) => appt.date === today && appt.status !== "Cancelado");
   const pending = state.leads.filter((lead) => lead.followUp <= today && lead.stage !== "fechado").length;
   const paid = state.transactions.filter((tx) => tx.status === "Pago").reduce((sum, tx) => sum + Number(tx.amount), 0);
-  const conversion = Math.round((state.leads.filter((lead) => lead.stage === "fechado").length / state.leads.length) * 100);
+  const wonLeads = state.leads.filter((lead) => lead.stage === "fechado").length;
+  const conversion = state.leads.length ? Math.round((wonLeads / state.leads.length) * 100) : 0;
+  const dbLeads = state.leads.filter((lead) => lead.dbId).length;
+  const dbAppointments = state.appointments.filter((appt) => appt.dbId).length;
+  const pendingPayments = state.transactions.filter((tx) => tx.status !== "Pago");
+  const proposalCount = state.leads.filter((lead) => lead.stage === "proposta").length;
+  const patientCount = new Set(
+    state.appointments
+      .filter((appt) => appt.status !== "Cancelado")
+      .map((appt) => appt.patientName)
+      .concat(state.leads.filter((lead) => lead.stage === "fechado").map((lead) => lead.name)),
+  ).size;
+  const pipelineValue = state.leads
+    .filter((lead) => lead.stage !== "fechado")
+    .reduce((sum, lead) => sum + Number(lead.value || 0), 0);
 
   appRoot().innerHTML = `
+    ${renderOpsHero({ dbLeads, dbAppointments, patientCount, pending, pipelineValue })}
+
     <div class="kpi-grid">
       ${kpi("Leads em aberto", newLeads, "entrada e novos", "◆")}
       ${kpi("Consultas hoje", todayAppointments.length, "sem conflitos ativos", "◧")}
@@ -362,6 +611,31 @@ function renderDashboard() {
     </div>
 
     <div class="dashboard-grid">
+      <section class="panel priority-panel">
+        <div class="section-header">
+          <h2>Fila operacional</h2>
+          <span class="chip blue">${pending + todayAppointments.length} itens</span>
+        </div>
+        <div class="queue-list">
+          ${renderQueueItem("Responder hoje", pending, "Follow-ups vencidos e conversas aguardando retorno", "inbox")}
+          ${renderQueueItem("Consultas do dia", todayAppointments.length, "Confirmacao, recepcao e pagamentos", "agenda")}
+          ${renderQueueItem("Propostas abertas", proposalCount, "Orcamentos e decisao comercial", "financeiro")}
+        </div>
+      </section>
+
+      <section class="panel module-panel">
+        <div class="section-header">
+          <h2>Modulos ativos</h2>
+          <span class="chip green">Prisma</span>
+        </div>
+        <div class="module-grid">
+          ${renderModuleCard("Pacientes", patientCount, "cadastro administrativo", "●")}
+          ${renderModuleCard("Orcamentos", proposalCount, "propostas em negociacao", "◈")}
+          ${renderModuleCard("Tarefas", pending, "follow-ups para executar", "✓")}
+          ${renderModuleCard("Banco", dbLeads + dbAppointments, "registros sincronizados", "↻")}
+        </div>
+      </section>
+
       <section class="panel">
         <div class="section-header">
           <h2>Proximos atendimentos</h2>
@@ -408,68 +682,96 @@ function renderDashboard() {
   `;
 }
 
+function renderOpsHero({ dbLeads, dbAppointments, patientCount, pending, pipelineValue }) {
+  const dbTotal = dbLeads + dbAppointments;
+  const syncLabel = dbTotal ? `${dbTotal} registros no banco` : "modo local pronto";
+  return `
+    <section class="ops-hero">
+      <div class="ops-hero-main">
+        <div class="eyebrow">CRM medico-operacional</div>
+        <h2>Central de atendimento, agenda e receita</h2>
+        <p>Acompanhe a fila comercial, pacientes administrativos, orcamentos, tarefas e proximos atendimentos em uma unica tela.</p>
+        <div class="status-row">
+          <span class="chip primary">${escapeHtml(syncLabel)}</span>
+          <span class="chip green">LGPD administrativo</span>
+          <span class="chip amber">sem prontuario</span>
+        </div>
+      </div>
+      <div class="ops-scoreboard">
+        <div>
+          <span>Pipeline aberto</span>
+          <strong>${formatMoney(pipelineValue)}</strong>
+        </div>
+        <div>
+          <span>Pacientes</span>
+          <strong>${patientCount}</strong>
+        </div>
+        <div>
+          <span>Tarefas hoje</span>
+          <strong>${pending}</strong>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function renderQueueItem(title, count, note, view) {
+  return `
+    <button class="queue-item" type="button" data-view="${view}">
+      <span class="queue-count">${count}</span>
+      <span class="queue-copy">
+        <strong>${escapeHtml(title)}</strong>
+        <small>${escapeHtml(note)}</small>
+      </span>
+      <span aria-hidden="true">→</span>
+    </button>
+  `;
+}
+
+function renderModuleCard(title, value, note, icon) {
+  return `
+    <article class="module-card">
+      <span class="module-icon" aria-hidden="true">${icon}</span>
+      <strong>${escapeHtml(title)}</strong>
+      <span class="module-value">${value}</span>
+      <small>${escapeHtml(note)}</small>
+    </article>
+  `;
+}
+
+// Inbox DB-first: le conversas + mensagens + classificacao do Postgres (/api/inbox).
 function renderInbox() {
-  const selected = getSelectedLead();
-  if (!selected) {
-    appRoot().innerHTML = emptyState("Cadastre um lead para iniciar a inbox.");
+  const box = ui.inbox;
+  if (box.list === null) {
+    if (!box.loading) loadInboxData();
+    appRoot().innerHTML = `<div class="data-table-wrap" style="padding:24px">Carregando inbox do banco...</div>`;
     return;
   }
-  const leads = filteredInboxLeads();
+  const list = filteredDbInbox();
+  const selected = box.list.find((c) => c.id === box.selectedId) || list[0] || null;
+  const count = (st) => box.list.filter((c) => c.status === st).length;
 
   appRoot().innerHTML = `
+    <div class="ops-strip">
+      ${renderOpsMetric("Abertas", count("OPEN"), "conversas em andamento")}
+      ${renderOpsMetric("Aguardando paciente", count("WAITING_PATIENT"), "sem resposta recente")}
+      ${renderOpsMetric("Com atendente", count("WAITING_TEAM"), "handoff / humano")}
+      ${renderOpsMetric("Total", box.list.length, "conversas no banco")}
+    </div>
     <div class="inbox-layout">
       <section class="inbox-list" aria-label="Conversas">
         <div class="list-search">
           <input id="inbox-search" class="search-input" type="search" value="${escapeHtml(ui.inboxSearch)}" placeholder="Buscar conversa" />
         </div>
         <div class="conversation-list">
-          ${leads.map(renderConversation).join("") || emptyState("Nenhuma conversa encontrada.")}
+          ${list.map((c) => renderDbConversationItem(c, selected)).join("") || emptyState("Nenhuma conversa no banco. Mensagens do webhook aparecem aqui.")}
         </div>
       </section>
-
       <section class="chat-pane" aria-label="Conversa selecionada">
-        <div class="chat-header">
-          <div class="avatar">${initials(selected.name)}</div>
-          <div class="item-main">
-            <div class="item-title">${escapeHtml(selected.name)}</div>
-            <div class="item-meta">${escapeHtml(leadContactLine(selected))} · ${escapeHtml(stageLabel(selected.stage))}</div>
-          </div>
-          <div class="chat-header-spacer"></div>
-          ${selected.channel ? `<span class="chip ${selected.channel === "instagram" ? "violet" : "green"}">${escapeHtml(channelLabel(selected.channel))}</span>` : ""}
-          <label class="switch">
-            <input type="checkbox" data-auto-mode data-id="${selected.id}" ${selected.autoMode ? "checked" : ""} />
-            Auto
-          </label>
-        </div>
-        <div class="messages" id="messages">
-          ${selected.messages.map(renderMessage).join("")}
-        </div>
-        <div class="composer">
-          <div class="template-row">
-            <button type="button" data-action="send-template" data-template="valor">Valor</button>
-            <button type="button" data-action="send-template" data-template="horarios">Horarios</button>
-            <button type="button" data-action="send-template" data-template="confirmacao">Confirmar</button>
-            <button type="button" data-action="send-template" data-template="humano">Humano</button>
-          </div>
-          <div class="composer-line patient-composer">
-            <textarea id="patient-message-input" placeholder="Simular mensagem recebida do paciente"></textarea>
-            <button class="secondary-button" type="button" data-action="receive-patient-message">
-              <span aria-hidden="true">↙</span>
-              Receber
-            </button>
-          </div>
-          <div class="composer-line">
-            <textarea id="message-input" placeholder="Responder conversa"></textarea>
-            <button class="primary-button" type="button" data-action="send-message">
-              <span aria-hidden="true">➤</span>
-              Enviar
-            </button>
-          </div>
-        </div>
+        ${selected ? renderDbChat(selected) : emptyState("Selecione uma conversa.")}
       </section>
-
       <aside class="lead-pane">
-        ${renderLeadSummary(selected)}
+        ${selected ? renderDbConversationSide(selected) : ""}
       </aside>
     </div>
   `;
@@ -479,8 +781,355 @@ function renderInbox() {
   });
 }
 
+function inboxConvName(c) {
+  return c.lead?.name || c.patient?.name || `${channelLabel(c.channel) || c.channel || ""} ${c.externalId || ""}`.trim();
+}
+
+function filteredDbInbox() {
+  const q = (ui.inboxSearch || "").trim().toLowerCase();
+  const list = ui.inbox.list || [];
+  if (!q) return list;
+  return list.filter((c) => `${inboxConvName(c)} ${c.externalId || ""} ${c.classification?.crm?.pipeline_funil || ""}`.toLowerCase().includes(q));
+}
+
+async function loadInboxData() {
+  ui.inbox.loading = true;
+  try {
+    const response = await apiFetch("/api/inbox", {}, false);
+    if (!response.ok) { ui.inbox.list = []; return; }
+    const payload = await response.json();
+    ui.inbox.list = payload.data || [];
+    if (!ui.inbox.selectedId && ui.inbox.list[0]) ui.inbox.selectedId = ui.inbox.list[0].id;
+    if (ui.inbox.selectedId) await loadInboxMessages(ui.inbox.selectedId);
+  } catch {
+    ui.inbox.list = [];
+  } finally {
+    ui.inbox.loading = false;
+    if (ui.view === "inbox") renderInbox();
+  }
+}
+
+async function loadInboxMessages(id) {
+  try {
+    const response = await apiFetch(`/api/conversations/${id}/messages`, {}, false);
+    ui.inbox.messages = response.ok ? (await response.json()).data || [] : [];
+  } catch {
+    ui.inbox.messages = [];
+  }
+}
+
+async function selectInboxConversation(id) {
+  ui.inbox.selectedId = id;
+  await loadInboxMessages(id);
+  renderInbox();
+}
+
+function renderDbConversationItem(c, selected) {
+  const k = c.classification?.crm;
+  const isSel = selected && c.id === selected.id;
+  return `
+    <article class="conversation ${isSel ? "active" : ""}" data-action="select-conversation" data-id="${c.id}">
+      <div class="avatar">${initials(inboxConvName(c))}</div>
+      <div class="item-main">
+        <div class="item-title">${escapeHtml(inboxConvName(c))}</div>
+        <div class="item-meta">${escapeHtml(k ? (PIPELINE_LABEL[k.pipeline_funil] || k.pipeline_funil) : channelLabel(c.channel) || c.channel)}</div>
+      </div>
+      ${k?.precisa_humano_agora ? '<span class="chip red">Humano</span>' : k ? `<span class="chip ${PRIORITY_TONE[k.prioridade] || "primary"}">${escapeHtml(k.prioridade)}</span>` : ""}
+    </article>`;
+}
+
+function renderDbMessage(m) {
+  const from = m.direction === "INBOUND" ? "patient" : m.direction === "SYSTEM" ? "system" : "assistant";
+  const by = m.metadata?.automatedBy;
+  const who = from === "assistant" ? state.clinic.assistant + (by ? ` · ${by.startsWith("OpenAI") ? "IA" : "Bot"}` : "") : from === "patient" ? "" : "";
+  const time = m.createdAt ? new Date(m.createdAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }) : "";
+  return `<div class="message ${from}">${who ? `<span class="who">${escapeHtml(who)}</span>` : ""}${escapeHtml(m.text)}<time>${time}</time></div>`;
+}
+
+function renderDbChat(c) {
+  return `
+    <div class="chat-header">
+      <div class="avatar">${initials(inboxConvName(c))}</div>
+      <div class="item-main">
+        <div class="item-title">${escapeHtml(inboxConvName(c))}</div>
+        <div class="item-meta">${escapeHtml(c.externalId || "")} · ${escapeHtml(conversationStatusLabel(c.status))}</div>
+      </div>
+      <div class="chat-header-spacer"></div>
+      <span class="chip ${c.channel === "instagram" ? "violet" : "green"}">${escapeHtml(channelLabel(c.channel) || c.channel)}</span>
+      <button class="secondary-button" type="button" data-action="inbox-refresh">Atualizar</button>
+    </div>
+    <div class="messages" id="messages">
+      ${(ui.inbox.messages || []).map(renderDbMessage).join("") || emptyState("Sem mensagens.")}
+    </div>
+    ${c.channel === "whatsapp" ? renderWhatsAppComposerTools() : ""}
+    <div class="composer">
+      <div class="composer-line patient-composer">
+        <textarea id="inbox-receive-input" placeholder="Simular mensagem recebida do paciente (classifica + agente)"></textarea>
+        <button class="secondary-button" type="button" data-action="inbox-receive" data-id="${c.id}">
+          <span aria-hidden="true">↙</span> Receber
+        </button>
+      </div>
+      <div class="composer-line">
+        <textarea id="inbox-reply-input" placeholder="${escapeHtml(replyPlaceholderForMode())}"></textarea>
+        <button class="primary-button" type="button" data-action="inbox-reply" data-id="${c.id}">
+          <span aria-hidden="true">➤</span> Enviar
+        </button>
+      </div>
+    </div>`;
+}
+
+function renderWhatsAppComposerTools() {
+  const buttonLabels = "Agendar consulta | Ver valores | Falar com atendente";
+  const listRows = "consulta|Consulta dermatologica|Avaliar queixa e indicar conduta\nretorno|Retorno|Acompanhamento administrativo\nteleconsulta|Teleconsulta|Atendimento online";
+  return `
+    <div class="whatsapp-tools">
+      <div class="segmented compact" aria-label="Tipo de mensagem WhatsApp">
+        ${["text", "buttons", "list", "template"]
+          .map((mode) => `<button type="button" class="${ui.waMode === mode ? "active" : ""}" data-action="set-wa-mode" data-mode="${mode}">${waModeLabel(mode)}</button>`)
+          .join("")}
+      </div>
+      ${
+        ui.waMode === "buttons"
+          ? `<div class="wa-grid">
+              <label>Botões<input id="wa-button-labels" value="${escapeHtml(buttonLabels)}" /></label>
+              <label>Rodapé<input id="wa-footer" value="Clinica QARA" /></label>
+            </div>`
+          : ""
+      }
+      ${
+        ui.waMode === "list"
+          ? `<div class="wa-grid">
+              <label>Texto do botão<input id="wa-list-button" value="Ver opcoes" maxlength="20" /></label>
+              <label>Seção<input id="wa-list-section" value="Atendimento" maxlength="24" /></label>
+              <label class="full">Linhas da lista<textarea id="wa-list-rows">${escapeHtml(listRows)}</textarea></label>
+            </div>`
+          : ""
+      }
+      ${
+        ui.waMode === "template"
+          ? `<div class="wa-grid">
+              <label>Modelo
+                <select id="wa-template-select">
+                  ${(state.whatsappTemplates || []).map((tpl) => `<option value="${tpl.id}">${escapeHtml(tpl.name)} · ${escapeHtml(tpl.status)}</option>`).join("")}
+                </select>
+              </label>
+              <label>Idioma<input id="wa-template-lang" value="${escapeHtml((state.whatsappTemplates || [])[0]?.language || "pt_BR")}" /></label>
+              <label class="full">Parametros do corpo<textarea id="wa-template-params" placeholder="Um parametro por linha para {{1}}, {{2}}, ..."></textarea></label>
+            </div>`
+          : ""
+      }
+    </div>
+  `;
+}
+
+function waModeLabel(mode) {
+  return { text: "Texto", buttons: "Botões", list: "Lista", template: "Modelo" }[mode] || mode;
+}
+
+function replyPlaceholderForMode() {
+  if (ui.waMode === "buttons") return "Texto principal acima dos botões";
+  if (ui.waMode === "list") return "Texto principal acima da lista";
+  if (ui.waMode === "template") return "Opcional: anotação interna. O envio usa o nome do modelo";
+  return "Responder (registra no banco e envia pelo canal quando configurado)";
+}
+
+function renderDbConversationSide(c) {
+  const k = c.classification?.crm;
+  return `
+    <div class="lead-summary">
+      <h3>${escapeHtml(inboxConvName(c))}</h3>
+      <p class="muted">${escapeHtml(c.externalId || "")}</p>
+      ${
+        k
+          ? `<div class="side-block">
+              <div class="side-label">Pipeline</div><div>${escapeHtml(PIPELINE_LABEL[k.pipeline_funil] || k.pipeline_funil)}</div>
+              <div class="side-label">Prioridade</div><div><span class="chip ${PRIORITY_TONE[k.prioridade] || "primary"}">${escapeHtml(k.prioridade || "-")}</span> <span class="chip ${TEMP_TONE[k.temperatura] || "amber"}">${escapeHtml(k.temperatura || "-")}</span></div>
+              <div class="side-label">Médico sugerido</div><div>${escapeHtml(k.medico_indicado || "-")}</div>
+              <div class="side-label">Próxima ação</div><div>${escapeHtml(k.proxima_acao || "-")}</div>
+              <div class="side-label">Tags</div><div class="muted">${(k.tags || []).map((t) => escapeHtml(t)).join(", ")}</div>
+            </div>`
+          : '<p class="muted">Sem classificação ainda.</p>'
+      }
+      <div class="button-row" style="margin-top:14px">
+        <button class="secondary-button" type="button" data-action="inbox-resolve" data-id="${c.id}">Resolver</button>
+      </div>
+    </div>`;
+}
+
+function conversationStatusLabel(s) {
+  return { OPEN: "Aberta", WAITING_PATIENT: "Aguardando paciente", WAITING_TEAM: "Com atendente", RESOLVED: "Resolvida", ARCHIVED: "Arquivada" }[s] || s;
+}
+
+async function sendInboxReply(id) {
+  const input = document.querySelector("#inbox-reply-input");
+  const text = clean(input?.value || "");
+  const conversation = (ui.inbox.list || []).find((item) => item.id === id);
+  if (!conversation) return toast("Conversa nao encontrada.");
+  const payload = buildInboxMessagePayload(conversation, text);
+  if (!payload) return;
+  try {
+    const response = await apiFetch("/api/messages/send", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }, false);
+    const result = await response.json().catch(() => null);
+    const providerError = result?.provider?.error || result?.error;
+    if (!response.ok && providerError !== "whatsapp_not_configured" && providerError !== "instagram_not_configured") {
+      throw new Error("send_failed");
+    }
+    if (input) input.value = "";
+    await loadInboxMessages(id);
+    ui.inbox.list = null;
+    await loadInboxData();
+    ui.inbox.selectedId = id;
+    renderInbox();
+    toast(result?.ok ? (ui.waMode === "text" ? "Resposta enviada." : "Mensagem WhatsApp enviada.") : "Mensagem registrada; canal externo nao configurado.");
+  } catch {
+    toast("Falha ao enviar resposta.");
+  }
+}
+
+function buildInboxMessagePayload(conversation, text) {
+  const base = {
+    channel: conversation.channel,
+    externalId: conversation.externalId,
+    name: inboxConvName(conversation),
+    text,
+    messageType: conversation.channel === "whatsapp" ? ui.waMode : "text",
+  };
+  if (conversation.channel !== "whatsapp" || ui.waMode === "text") {
+    if (!text) {
+      toast("Digite a mensagem.");
+      return null;
+    }
+    return base;
+  }
+
+  if (ui.waMode === "buttons") {
+    const buttons = splitButtonLabels(document.querySelector("#wa-button-labels")?.value || "");
+    if (!text || !buttons.length) {
+      toast("Informe texto e pelo menos um botao.");
+      return null;
+    }
+    return {
+      ...base,
+      whatsapp: {
+        body: text,
+        footer: clean(document.querySelector("#wa-footer")?.value || ""),
+        buttons,
+      },
+    };
+  }
+
+  if (ui.waMode === "list") {
+    const rows = parseWaListRows(document.querySelector("#wa-list-rows")?.value || "");
+    if (!text || !rows.length) {
+      toast("Informe texto e linhas da lista.");
+      return null;
+    }
+    return {
+      ...base,
+      whatsapp: {
+        body: text,
+        buttonText: clean(document.querySelector("#wa-list-button")?.value || "Ver opcoes"),
+        sections: [{ title: clean(document.querySelector("#wa-list-section")?.value || "Atendimento"), rows }],
+      },
+    };
+  }
+
+  if (ui.waMode === "template") {
+    const template = getWhatsAppTemplate(document.querySelector("#wa-template-select")?.value);
+    const templateName = clean(template?.templateName || "");
+    if (!templateName) {
+      toast("Escolha um modelo aprovado.");
+      return null;
+    }
+    const params = (document.querySelector("#wa-template-params")?.value || "").split(/\r?\n/).map(clean).filter(Boolean);
+    return {
+      ...base,
+      text: text || renderTemplatePreview(template, params),
+      whatsapp: {
+        templateName,
+        languageCode: clean(document.querySelector("#wa-template-lang")?.value || template.language || "pt_BR"),
+        bodyParams: params,
+      },
+    };
+  }
+
+  return base;
+}
+
+function splitButtonLabels(value) {
+  return String(value || "")
+    .split("|")
+    .map((title, index) => ({ id: `btn_${index + 1}`, title: clean(title) }))
+    .filter((button) => button.title)
+    .slice(0, 3);
+}
+
+function parseWaListRows(value) {
+  return String(value || "")
+    .split(/\r?\n/)
+    .map((line, index) => {
+      const [id, title, description] = line.split("|").map(clean);
+      return { id: id || `row_${index + 1}`, title, description };
+    })
+    .filter((row) => row.title)
+    .slice(0, 10);
+}
+
+// Simula mensagem recebida via webhook (gera classificacao + agente, igual produção).
+async function receiveInbox(id) {
+  const c = (ui.inbox.list || []).find((x) => x.id === id);
+  const input = document.querySelector("#inbox-receive-input");
+  const text = clean(input?.value || "");
+  if (!c || !text) return;
+  const payload =
+    c.channel === "instagram"
+      ? { object: "instagram", entry: [{ messaging: [{ sender: { id: c.externalId }, message: { text } }] }] }
+      : { object: "whatsapp_business_account", entry: [{ changes: [{ value: { contacts: [{ wa_id: c.externalId, profile: { name: inboxConvName(c) } }], messages: [{ from: c.externalId, id: `sim-${Date.now()}`, timestamp: String(Math.floor(Date.now() / 1000)), type: "text", text: { body: text } }] } }] }] };
+  try {
+    await fetch("/webhooks/meta", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+    toast("Mensagem recebida — classificando...");
+    setTimeout(async () => {
+      ui.inbox.list = null;
+      await loadInboxData();
+    }, 1600);
+  } catch {
+    toast("Falha ao simular recebimento.");
+  }
+}
+
+async function resolveInboxConversation(id) {
+  try {
+    await apiFetch(`/api/conversations/${id}/resolve`, { method: "POST" }, false);
+    ui.inbox.list = null;
+    renderInbox();
+    toast("Conversa resolvida.");
+  } catch {
+    toast("Falha ao resolver.");
+  }
+}
+
 function renderLeads() {
+  const totalValue = filteredLeads().reduce((sum, lead) => sum + Number(lead.value || 0), 0);
+  const hot = filteredLeads().filter((lead) => lead.stage === "proposta" || lead.stage === "agendado").length;
   appRoot().innerHTML = `
+    <div class="record-board-head">
+      <div>
+        <div class="eyebrow">Pipeline comercial</div>
+        <h2>Kanban, lista e detalhe do lead</h2>
+      </div>
+      <div class="segmented" aria-label="Visao do funil">
+        <button type="button" class="${ui.funnelView === "clinico" ? "active" : ""}" data-action="set-funnel-view" data-mode="clinico">Pipelines clínicos</button>
+        <button type="button" class="${ui.funnelView === "kanban" ? "active" : ""}" data-action="set-funnel-view" data-mode="kanban">Kanban comercial</button>
+        <button type="button" class="${ui.funnelView === "table" ? "active" : ""}" data-action="set-funnel-view" data-mode="table">Lista</button>
+        <button type="button" class="${ui.funnelView === "triage" ? "active" : ""}" data-action="set-funnel-view" data-mode="triage">Triagem</button>
+      </div>
+    </div>
+    <div class="ops-strip">
+      ${renderOpsMetric("Valor aberto", formatMoney(totalValue), "pipeline filtrado")}
+      ${renderOpsMetric("Alta intencao", hot, "proposta ou agenda")}
+      ${renderOpsMetric("Leads", filteredLeads().length, "registros encontrados")}
+      ${renderOpsMetric("Campos", 8, "origem, etapa, valor, follow-up")}
+    </div>
     <div class="toolbar">
       <div class="toolbar-left">
         <input id="lead-search" class="search-input" type="search" value="${escapeHtml(ui.leadSearch)}" placeholder="Buscar lead, origem ou interesse" />
@@ -492,9 +1141,373 @@ function renderLeads() {
         </button>
       </div>
     </div>
-    <section class="pipeline" aria-label="Funil de leads">
-      ${stages.map(renderStageColumn).join("")}
-    </section>
+    ${
+      ui.funnelView === "clinico"
+        ? renderClinicalPipelines()
+        : ui.funnelView === "triage"
+        ? renderTriageView()
+        : ui.funnelView === "table"
+        ? renderLeadTable(filteredLeads())
+        : `<section class="pipeline" aria-label="Funil de leads">${stages.map(renderStageColumn).join("")}</section>`
+    }
+  `;
+}
+
+const PRIORITY_TONE = { P1: "red", P2: "amber", P3: "blue", P4: "primary" };
+const TEMP_TONE = { Quente: "red", Morno: "amber", Frio: "blue" };
+const PIPELINE_LABEL = {
+  "1-unhas": "Unhas / Onicologia", "2-cirurgia": "Cirurgia Dermatológica", "3-tricologia": "Tricologia / Cabelos",
+  "4-inflamatorias": "Inflamatórias Crônicas", "5-dermatopediatria": "Dermatopediatria", "6-dermatologia-clinica": "Dermatologia Clínica",
+  "7-podologia": "Podologia", "8-administrativo": "Administrativo", "9-reativacao": "Alta / Reativação",
+};
+const QARA_PIPELINES = Object.keys(PIPELINE_LABEL);
+
+function triageRowsFromLeads() {
+  return filteredLeads();
+}
+
+function leadClassification(lead) {
+  const crm = lead.classification?.crm;
+  if (crm?.pipeline_funil) return crm;
+
+  const pipeline = inferLeadPipeline(lead);
+  const score = Number(lead.score || 0);
+  const temperatura = score >= 70 ? "Quente" : score >= 40 ? "Morno" : "Frio";
+  const prioridade = score >= 85 ? "P1" : score >= 70 ? "P2" : score >= 40 ? "P3" : "P4";
+  return {
+    pipeline_funil: pipeline,
+    etapa_funil: inferLeadEtapa(lead.stage),
+    prioridade,
+    temperatura,
+    tags: [`pipeline:${pipeline.replace(/^\d-/, "")}`, `temp:${temperatura.toLowerCase()}`],
+    precisa_humano_agora: prioridade === "P1",
+    medico_indicado: "",
+    proxima_acao: lead.nextStep || "Acompanhar lead",
+  };
+}
+
+function inferLeadPipeline(lead) {
+  const text = normalize(`${lead.interest || ""} ${lead.source || ""} ${lead.nextStep || ""}`);
+  if (/unha|onic|micose|encravad/.test(text)) return "1-unhas";
+  if (/cirurg|pinta|cisto|lipoma|biops|cancer|sinal/.test(text)) return "2-cirurgia";
+  if (/cabelo|queda|alopecia|tricolog/.test(text)) return "3-tricologia";
+  if (/psoriase|dermatite|hidradenite|autoimun|inflamator/.test(text)) return "4-inflamatorias";
+  if (/crianca|infantil|filha|filho|pediatr/.test(text)) return "5-dermatopediatria";
+  if (/podolog|pe|pes/.test(text)) return "7-podologia";
+  if (/convenio|endereco|horario|valor|preco|pagamento/.test(text)) return "8-administrativo";
+  if (lead.stage === "fechado") return "9-reativacao";
+  return "6-dermatologia-clinica";
+}
+
+function inferLeadEtapa(stageId) {
+  return {
+    entrada: "novo-lead",
+    qualificacao: "qualificado",
+    proposta: "horario-oferecido",
+    agendado: "agendado",
+    fechado: "atendido",
+  }[stageId] || "novo-lead";
+}
+
+function triageFiltered() {
+  const f = ui.triageFilter;
+  return triageRowsFromLeads().filter((lead) => {
+    const k = leadClassification(lead);
+    return (
+      (!f.pipeline || k.pipeline_funil === f.pipeline) &&
+      (!f.prioridade || k.prioridade === f.prioridade) &&
+      (!f.temperatura || k.temperatura === f.temperatura)
+    );
+  });
+}
+
+function renderTriageView() {
+  const rows = triageFiltered();
+  const opt = (v, sel) => `<option value="${escapeHtml(v)}" ${v === sel ? "selected" : ""}>${escapeHtml(v || "Todos")}</option>`;
+  return `
+    <div class="triage-filters">
+      <select id="triage-pipeline"><option value="">Todos</option>${QARA_PIPELINES.map((p) => `<option value="${p}" ${p === ui.triageFilter.pipeline ? "selected" : ""}>${escapeHtml(PIPELINE_LABEL[p])}</option>`).join("")}</select>
+      <select id="triage-prioridade">${["", "P1", "P2", "P3", "P4"].map((p) => opt(p, ui.triageFilter.prioridade)).join("")}</select>
+      <select id="triage-temperatura">${["", "Quente", "Morno", "Frio"].map((p) => opt(p, ui.triageFilter.temperatura)).join("")}</select>
+      <span class="muted">${rows.length} lead(s)</span>
+    </div>
+    ${
+      rows.length
+        ? `<div class="data-table-wrap"><table class="data-table"><thead><tr>
+            <th>Lead</th><th>Pipeline</th><th>Prioridade</th><th>Temperatura</th><th class="num">Score</th><th>Tags</th>
+          </tr></thead><tbody>
+          ${rows
+            .map((lead) => {
+              const k = leadClassification(lead);
+              return `<tr>
+                <td><div class="cell-main"><span class="avatar sm">${initials(lead.name)}</span>${escapeHtml(lead.name)}</div></td>
+                <td>${escapeHtml(PIPELINE_LABEL[k.pipeline_funil] || k.pipeline_funil || "-")}</td>
+                <td><span class="chip ${PRIORITY_TONE[k.prioridade] || "primary"}">${escapeHtml(k.prioridade || "-")}</span>${k.precisa_humano_agora ? ' <span class="chip red">Humano</span>' : ""}</td>
+                <td><span class="chip ${TEMP_TONE[k.temperatura] || "amber"}">${escapeHtml(k.temperatura || "-")}</span></td>
+                <td class="num"><span class="chip ${scoreTone(lead.score)}">${lead.score || 0}</span></td>
+                <td class="muted">${(k.tags || []).slice(0, 4).map((t) => escapeHtml(t)).join(", ")}</td>
+              </tr>`;
+            })
+            .join("")}
+          </tbody></table></div>`
+        : emptyState("Nenhum lead encontrado para os filtros atuais.")
+    }
+  `;
+}
+
+const ETAPAS = ["novo-lead", "qualificado", "horario-oferecido", "agendado", "confirmado", "atendido", "reagendado", "perdido", "alta-manutencao"];
+const ETAPA_LABEL = {
+  "novo-lead": "Novo lead", qualificado: "Qualificado", "horario-oferecido": "Horário oferecido", agendado: "Agendado",
+  confirmado: "Confirmado", atendido: "Atendido", reagendado: "Reagendado", perdido: "Perdido", "alta-manutencao": "Alta / Manutenção",
+};
+
+// Funil clínico: colunas = etapas do classificador, cards = leads do pipeline selecionado.
+function renderClinicalPipelines() {
+  const rows = triageRowsFromLeads();
+  const countByPipe = (p) => rows.filter((lead) => leadClassification(lead).pipeline_funil === p).length;
+  const selected = ui.clinicalPipeline;
+  const inPipe = rows.filter((lead) => leadClassification(lead).pipeline_funil === selected);
+
+  const tabs = QARA_PIPELINES.map((p) => {
+    const n = countByPipe(p);
+    return `<button type="button" class="chip ${p === selected ? "primary" : ""}" data-action="set-clinical-pipeline" data-id="${p}">${escapeHtml(PIPELINE_LABEL[p])}${n ? ` <strong>${n}</strong>` : ""}</button>`;
+  }).join("");
+
+  const columns = ETAPAS.map((etapa) => {
+    const cards = inPipe.filter((lead) => (leadClassification(lead).etapa_funil || "novo-lead") === etapa);
+    return `
+      <div class="pipeline-col">
+        <header><span>${escapeHtml(ETAPA_LABEL[etapa])}</span><span class="count">${cards.length}</span></header>
+        ${cards.map(renderClinicalCard).join("") || `<p class="muted" style="padding:8px 4px">—</p>`}
+      </div>`;
+  }).join("");
+
+  return `
+    <div class="pipeline-tabs">${tabs}</div>
+    <section class="pipeline" aria-label="Pipeline clínico: ${escapeHtml(PIPELINE_LABEL[selected])}">${columns}</section>
+  `;
+}
+
+function renderClinicalCard(c) {
+  const k = leadClassification(c);
+  const name = c.name;
+  return `
+    <article class="lead-card" data-action="select-lead" data-id="${c.id}">
+      <div class="cell-main"><span class="avatar sm">${initials(name)}</span><strong>${escapeHtml(name)}</strong></div>
+      <div class="card-chips">
+        <span class="chip ${PRIORITY_TONE[k.prioridade] || "primary"}">${escapeHtml(k.prioridade || "-")}</span>
+        <span class="chip ${TEMP_TONE[k.temperatura] || "amber"}">${escapeHtml(k.temperatura || "-")}</span>
+        <span class="chip ${scoreTone(c.score)}">Score ${c.score || 0}</span>
+        ${k.precisa_humano_agora ? '<span class="chip red">Humano</span>' : ""}
+      </div>
+      ${k.medico_indicado && k.medico_indicado !== "A definir" ? `<p class="muted">${escapeHtml(k.medico_indicado)}</p>` : ""}
+      ${k.proxima_acao ? `<p class="card-next">→ ${escapeHtml(k.proxima_acao)}</p>` : ""}
+    </article>`;
+}
+
+function renderLeadTable(leads) {
+  if (!leads.length) return emptyState("Nenhum lead encontrado.");
+  return `
+    <div class="data-table-wrap">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Nome</th><th>Telefone</th><th>Origem</th><th>Interesse</th><th>Etapa</th><th class="num">Score</th><th class="num">Valor</th><th></th>
+          </tr>
+        </thead>
+        <tbody>
+          ${leads
+            .map(
+              (lead) => `
+            <tr>
+              <td><div class="cell-main"><span class="avatar sm">${initials(lead.name)}</span>${escapeHtml(lead.name)}</div></td>
+              <td class="muted">${escapeHtml(lead.phone || "-")}</td>
+              <td>${escapeHtml(lead.source || "-")}</td>
+              <td class="muted">${escapeHtml(lead.interest || "-")}</td>
+              <td><span class="chip ${stageTone(lead.stage)}">${escapeHtml(stageLabel(lead.stage))}</span></td>
+              <td class="num"><span class="chip ${scoreTone(lead.score)}">${lead.score || 0}</span></td>
+              <td class="num"><strong>${formatMoney(lead.value)}</strong></td>
+              <td><button class="link-button" type="button" data-action="select-lead" data-id="${lead.id}">Detalhe →</button></td>
+            </tr>`,
+            )
+            .join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderOperations() {
+  if (!ui.ops.loading && !ui.ops.briefing && !ui.ops.error) loadOperations();
+  if (ui.ops.loading && !ui.ops.briefing) {
+    appRoot().innerHTML = `<div class="data-table-wrap" style="padding:24px">Carregando operacao...</div>`;
+    return;
+  }
+
+  const briefing = ui.ops.briefing || {};
+  const pipeline = ui.ops.pipeline || {};
+  const followups = ui.ops.followups || { counts: {}, overdue: [], today: [], upcoming: [], unscheduled: [] };
+  const hotLeads = briefing.hotLeads || [];
+  const highScore = pipeline.highScoreWithoutAppointment || [];
+
+  appRoot().innerHTML = `
+    <div class="ops-strip">
+      ${renderOpsMetric("Follow-ups atrasados", followups.counts?.overdue || 0, "tarefas vencidas")}
+      ${renderOpsMetric("Para hoje", followups.counts?.today || 0, "execucao do dia")}
+      ${renderOpsMetric("Leads quentes", hotLeads.length, "score 70+ ou HOT")}
+      ${renderOpsMetric("Sem consulta", highScore.length, "score alto sem agenda")}
+    </div>
+
+    <div class="config-grid">
+      <section class="panel">
+        <div class="section-header">
+          <h2>Briefing diario</h2>
+          <button class="ghost-button" type="button" data-action="ops-refresh">Atualizar</button>
+        </div>
+        ${ui.ops.error ? `<div class="empty-state">${escapeHtml(ui.ops.error)}</div>` : renderPriorityTable(briefing.priorities || [])}
+      </section>
+
+      <section class="panel">
+        <div class="section-header">
+          <h2>Webhook universal</h2>
+          <button class="secondary-button" type="button" data-action="ops-copy-webhook">Copiar URL</button>
+        </div>
+        <div class="setup-list">
+          ${renderSetupItem("Endpoint", true, `${window.location.origin}/api/webhook`)}
+          ${renderSetupItem("Segredo", true, "LEAD_WEBHOOK_SECRET")}
+          ${renderSetupItem("Campos aceitos", true, "nome, telefone, email, origem, interesse, mensagem")}
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="section-header">
+          <h2>CSV</h2>
+          <span class="chip primary">leads</span>
+        </div>
+        <div class="button-row">
+          <button class="secondary-button" type="button" data-action="ops-export-csv" data-type="leads">Exportar leads</button>
+          <button class="secondary-button" type="button" data-action="ops-import-csv">Importar leads</button>
+          <button class="secondary-button" type="button" data-action="ops-export-csv" data-type="appointments">Exportar agenda</button>
+        </div>
+        <input id="ops-csv-file" type="file" accept=".csv,text/csv" hidden />
+      </section>
+
+      <section class="panel">
+        <div class="section-header">
+          <h2>Score e pipeline</h2>
+          <button class="secondary-button" type="button" data-action="ops-recalculate-score">Recalcular scores</button>
+        </div>
+        ${renderPipelineTable(pipeline.stages || [])}
+      </section>
+
+      <section class="panel">
+        <div class="section-header">
+          <h2>Follow-ups</h2>
+          <span class="chip amber">${(followups.counts?.overdue || 0) + (followups.counts?.today || 0)} urgentes</span>
+        </div>
+        ${renderFollowupTable([...(followups.overdue || []), ...(followups.today || []), ...(followups.upcoming || [])].slice(0, 10))}
+      </section>
+
+      <section class="panel">
+        <div class="section-header">
+          <h2>Leads de alta intencao</h2>
+          <span class="chip green">${highScore.length}</span>
+        </div>
+        ${renderHighScoreTable(highScore)}
+      </section>
+    </div>
+  `;
+}
+
+function renderPriorityTable(items) {
+  if (!items.length) return emptyState("Sem prioridade critica no briefing.");
+  return `
+    <div class="data-table-wrap">
+      <table class="data-table">
+        <thead><tr><th>Tipo</th><th>Item</th><th>Lead</th></tr></thead>
+        <tbody>
+          ${items
+            .map(
+              (item) => `
+            <tr>
+              <td><span class="chip ${item.type === "lead_quente" ? "green" : "amber"}">${escapeHtml(item.type || "-")}</span></td>
+              <td>${escapeHtml(item.title || "-")}</td>
+              <td class="muted">${escapeHtml(item.lead?.name || "-")}</td>
+            </tr>`,
+            )
+            .join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderPipelineTable(stagesRows) {
+  if (!stagesRows.length) return emptyState("Sem dados de funil no banco.");
+  return `
+    <div class="data-table-wrap">
+      <table class="data-table">
+        <thead><tr><th>Etapa</th><th class="num">Leads</th><th class="num">Valor</th></tr></thead>
+        <tbody>
+          ${stagesRows
+            .map(
+              (row) => `
+            <tr>
+              <td>${escapeHtml(row.stage)}</td>
+              <td class="num">${row.total || 0}</td>
+              <td class="num"><strong>${formatMoney(row.estimatedValue || 0)}</strong></td>
+            </tr>`,
+            )
+            .join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderFollowupTable(tasks) {
+  if (!tasks.length) return emptyState("Nenhum follow-up aberto.");
+  return `
+    <div class="data-table-wrap">
+      <table class="data-table">
+        <thead><tr><th>Tarefa</th><th>Lead/Paciente</th><th>Vencimento</th></tr></thead>
+        <tbody>
+          ${tasks
+            .map(
+              (task) => `
+            <tr>
+              <td>${escapeHtml(task.title || "-")}</td>
+              <td class="muted">${escapeHtml(task.lead?.name || task.patient?.name || "-")}</td>
+              <td>${task.dueAt ? escapeHtml(formatDateTime(task.dueAt)) : "-"}</td>
+            </tr>`,
+            )
+            .join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderHighScoreTable(leads) {
+  if (!leads.length) return emptyState("Nenhum lead score 70+ sem consulta.");
+  return `
+    <div class="data-table-wrap">
+      <table class="data-table">
+        <thead><tr><th>Lead</th><th>Interesse</th><th class="num">Score</th></tr></thead>
+        <tbody>
+          ${leads
+            .map(
+              (lead) => `
+            <tr>
+              <td>${escapeHtml(lead.name || "-")}</td>
+              <td class="muted">${escapeHtml(lead.interest || "-")}</td>
+              <td class="num"><span class="chip ${scoreTone(lead.score)}">${lead.score || 0}</span></td>
+            </tr>`,
+            )
+            .join("")}
+        </tbody>
+      </table>
+    </div>
   `;
 }
 
@@ -502,8 +1515,18 @@ function renderAgenda() {
   const appointments = state.appointments
     .filter((appt) => appt.date === ui.agendaDate)
     .sort((a, b) => a.time.localeCompare(b.time));
+  const conflicts = countAgendaConflicts(appointments);
+  // Só profissionais com atendimento no dia viram coluna; sem nenhum, mostra todos (grade vazia honesta).
+  const activePros = professionals.filter((name) => appointments.some((a) => a.professional === name));
+  const board = activePros.length ? activePros : professionals;
 
   appRoot().innerHTML = `
+    <div class="ops-strip">
+      ${renderOpsMetric("Atendimentos", appointments.length, "no dia")}
+      ${renderOpsMetric("Profissionais", board.length, "com agenda no dia")}
+      ${renderOpsMetric("Livres", freeSlotsForDate(ui.agendaDate), "slots disponiveis")}
+      ${renderOpsMetric("Conflitos", conflicts, "mesmo profissional/horario")}
+    </div>
     <div class="toolbar">
       <div class="toolbar-left">
         <div class="field-inline">
@@ -518,29 +1541,38 @@ function renderAgenda() {
         </button>
       </div>
     </div>
-    <div class="agenda-layout">
-      <section class="panel">
-        <div class="section-header">
-          <h2>Grade do dia</h2>
-          <small>${formatDate(ui.agendaDate)}</small>
-        </div>
-        <div class="schedule-grid">
-          <div class="schedule-cell header">Hora</div>
-          ${professionals.map((name) => `<div class="schedule-cell header">${escapeHtml(shortProfessional(name))}</div>`).join("")}
-          ${times.map((time) => renderScheduleRow(time)).join("")}
-        </div>
-      </section>
-      <section class="panel">
-        <div class="section-header">
-          <h2>Atendimentos</h2>
-          <span class="chip blue">${appointments.length} no dia</span>
-        </div>
-        <div class="appointment-list">
-          ${appointments.map(renderAppointmentItem).join("") || emptyState("Agenda livre nesta data.")}
-        </div>
-      </section>
-    </div>
+    <section class="panel">
+      <div class="section-header">
+        <h2>Agenda do dia</h2>
+        <small>${formatDate(ui.agendaDate)} · ${appointments.length} atendimento(s)</small>
+      </div>
+      ${
+        appointments.length
+          ? `<div class="agenda-board">${board.map((name) => renderProfessionalColumn(name, appointments.filter((a) => a.professional === name))).join("")}</div>`
+          : emptyState("Agenda livre nesta data.")
+      }
+    </section>
   `;
+}
+
+// Coluna por profissional: cabeçalho + pílulas ordenadas por horário.
+function renderProfessionalColumn(name, appts) {
+  return `
+    <div class="agenda-col">
+      <header><span class="avatar sm">${initials(name)}</span><div><strong>${escapeHtml(shortProfessional(name))}</strong><small>${appts.length} consulta(s)</small></div></header>
+      <div class="agenda-col-body">
+        ${appts.map((appt) => `
+          <article class="event-pill ${appt.status.toLowerCase()}">
+            <div class="event-time">${escapeHtml(appt.time)}</div>
+            <div class="event-name">${escapeHtml(appt.patientName)}</div>
+            <div class="event-meta">${escapeHtml(appt.type)} · ${escapeHtml(appt.status)}</div>
+            <div class="mini-actions">
+              ${appt.status !== "Confirmado" && appt.status !== "Cancelado" ? `<button type="button" data-action="confirm-appointment" data-id="${appt.id}">Confirmar</button>` : ""}
+              ${appt.status !== "Cancelado" ? `<button type="button" data-action="cancel-appointment" data-id="${appt.id}">Cancelar</button>` : ""}
+            </div>
+          </article>`).join("") || `<p class="muted" style="padding:8px">—</p>`}
+      </div>
+    </div>`;
 }
 
 function renderFinanceiro() {
@@ -549,13 +1581,23 @@ function renderFinanceiro() {
   const pending = state.transactions.filter((tx) => tx.status === "Pendente").reduce((sum, tx) => sum + Number(tx.amount), 0);
   const projected = paid + pending;
   const average = state.leads.length ? Math.round(projected / state.leads.length) : 0;
+  const fees = Math.round(projected * 0.035);
+  const costs = Math.round(projected * 0.28);
+  const repasses = Math.round(projected * 0.32);
+  const profit = projected - fees - costs - repasses;
 
   appRoot().innerHTML = `
     <div class="kpi-grid">
       ${kpi("Projetado", formatMoney(projected), "pago + pendente", "◈")}
       ${kpi("Recebido", formatMoney(paid), "caixa confirmado", "✓")}
       ${kpi("A receber", formatMoney(pending), "em aberto", "◒")}
-      ${kpi("Ticket medio", formatMoney(average), "por lead", "↗")}
+      ${kpi("Lucro estimado", formatMoney(profit), "apos taxas e repasses", "↗")}
+    </div>
+    <div class="ops-strip">
+      ${renderOpsMetric("Ticket medio", formatMoney(average), "por lead")}
+      ${renderOpsMetric("Taxas", formatMoney(fees), "cartao/gateway")}
+      ${renderOpsMetric("Custos", formatMoney(costs), "insumos e sala")}
+      ${renderOpsMetric("Repasses", formatMoney(repasses), "profissionais")}
     </div>
     <div class="finance-grid">
       <section class="panel">
@@ -580,8 +1622,14 @@ function renderFinanceiro() {
 
       <section class="panel">
         <div class="section-header">
-          <h2>Receita por origem</h2>
+          <h2>Orcamentos e margem</h2>
           <small>${formatMoney(projected)}</small>
+        </div>
+        <div class="budget-stack">
+          ${state.leads.slice(0, 4).map(renderBudgetCard).join("")}
+        </div>
+        <div class="section-header compact">
+          <h2>Receita por origem</h2>
         </div>
         <div class="bar-list">
           ${renderOriginBars(projected)}
@@ -676,16 +1724,59 @@ function renderChannelLead(lead) {
 
 function renderBots() {
   const bots = state.bots || [];
+  const templates = state.whatsappTemplates || [];
+  const visualBots = state.visualBots || [];
+  if (!ui.selectedVisualBotId && visualBots[0]) ui.selectedVisualBotId = visualBots[0].id;
+  const selectedVisualBot = visualBots.find((bot) => bot.id === ui.selectedVisualBotId) || visualBots[0];
   const activeCount = bots.filter((bot) => bot.active).length;
   const rulesCount = bots.reduce((sum, bot) => sum + (bot.rules?.length || 0), 0);
 
   appRoot().innerHTML = `
+    <div class="workflow-grid">
+      ${renderWorkflowCard("Lead novo", "Cria tarefa e primeira resposta", "ativo")}
+      ${renderWorkflowCard("Orcamento enviado", "Follow-up D+1, D+3 e D+7", "ativo")}
+      ${renderWorkflowCard("No-show", "Remarcacao e reativacao", "rascunho")}
+      ${renderWorkflowCard("Campanha", "Templates por origem e consentimento", "rascunho")}
+    </div>
     <div class="kpi-grid">
       ${kpi("Bots ativos", activeCount, "respondendo leads", "⌁")}
       ${kpi("Regras", rulesCount, "condicoes importadas", "▦")}
       ${kpi("Fluxos", bots.length, "modelos disponiveis", "◒")}
       ${kpi("Modo", "Local", "sem backend obrigatorio", "◆")}
     </div>
+
+    <section class="panel">
+      <div class="section-header">
+        <h2>Modelos WhatsApp</h2>
+        <div class="button-row">
+          <button class="primary-button" type="button" data-action="new-wa-template">＋ Novo modelo</button>
+        </div>
+      </div>
+      ${renderWhatsAppTemplateTable(templates)}
+    </section>
+
+    <section class="panel">
+      <div class="section-header">
+        <h2>Automacao visual</h2>
+        <div class="button-row">
+          <button class="secondary-button" type="button" data-action="new-visual-bot">＋ Criar bot</button>
+          ${selectedVisualBot ? `<button class="secondary-button" type="button" data-action="add-visual-step" data-id="${selectedVisualBot.id}">＋ Passo</button>` : ""}
+        </div>
+      </div>
+      <div class="salesbot-editor">
+        <aside class="salesbot-list">
+          ${visualBots.map((bot) => `
+            <button type="button" class="${bot.id === selectedVisualBot?.id ? "active" : ""}" data-action="select-visual-bot" data-id="${bot.id}">
+              <strong>${escapeHtml(bot.name)}</strong>
+              <span>${escapeHtml(bot.trigger || "gatilho manual")} · ${bot.steps?.length || 0} passo(s)</span>
+            </button>
+          `).join("") || emptyState("Nenhum bot visual.")}
+        </aside>
+        <div class="salesbot-canvas">
+          ${selectedVisualBot ? renderSalesbotCanvas(selectedVisualBot) : emptyState("Crie ou selecione um bot.")}
+        </div>
+      </div>
+    </section>
 
     <div class="bots-layout">
       <section class="panel">
@@ -730,6 +1821,105 @@ function renderBots() {
     </div>
 
     ${renderAgentTester()}
+  `;
+}
+
+function renderWhatsAppTemplateTable(templates) {
+  if (!templates.length) return emptyState("Nenhum modelo cadastrado.");
+  return `
+    <div class="data-table-wrap">
+      <table class="data-table">
+        <thead><tr><th>Nome</th><th>Tipo</th><th>Status</th><th>Categoria</th><th>Idioma</th><th>ID WABA</th><th>Texto de resposta</th><th></th></tr></thead>
+        <tbody>
+          ${templates.map((tpl) => `
+            <tr>
+              <td><strong>${escapeHtml(tpl.name)}</strong><div class="muted">${escapeHtml(tpl.templateName || "")}</div></td>
+              <td>${escapeHtml(tpl.type || "WhatsApp")}</td>
+              <td><span class="chip ${tpl.status === "Aprovado" ? "green" : "amber"}">${escapeHtml(tpl.status || "Rascunho")}</span></td>
+              <td>${escapeHtml(tpl.category || "-")}</td>
+              <td>${escapeHtml(tpl.language || "pt_BR")}</td>
+              <td class="muted">${escapeHtml(tpl.wabaId || "-")}</td>
+              <td class="muted">${escapeHtml((tpl.body || "").slice(0, 90))}${(tpl.body || "").length > 90 ? "..." : ""}</td>
+              <td>
+                <div class="mini-actions">
+                  <button type="button" data-action="edit-wa-template" data-id="${tpl.id}">Editar</button>
+                  <button type="button" data-action="select-template-for-inbox" data-id="${tpl.id}">Usar</button>
+                  <button type="button" data-action="delete-wa-template" data-id="${tpl.id}">Excluir</button>
+                </div>
+              </td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderWhatsAppTemplatePreview(template) {
+  const body = escapeHtml(renderTemplatePreview(template)).replaceAll("\n", "<br>");
+  const buttons = template.buttons || [];
+  return `
+    <aside class="wa-phone-preview">
+      <div class="wa-phone-shell">
+        <div class="wa-phone-top">
+          <span>15:30</span>
+          <span>WhatsApp</span>
+        </div>
+        <div class="wa-phone-chat">
+          <div class="wa-bubble">
+            <div class="wa-bubble-text">${body || '<span class="muted">Texto do modelo</span>'}</div>
+            ${
+              buttons.length
+                ? `<div class="wa-bubble-buttons">
+                    ${buttons.map((button) => `<span>${escapeHtml(button.title)}</span>`).join("")}
+                  </div>`
+                : ""
+            }
+          </div>
+        </div>
+      </div>
+    </aside>
+  `;
+}
+
+function renderSalesbotCanvas(bot) {
+  const steps = bot.steps || [];
+  return `
+    <div class="salesbot-head">
+      <div>
+        <strong>${escapeHtml(bot.name)}</strong>
+        <span>${escapeHtml(bot.trigger || "gatilho manual")} · ${steps.length} passo(s) · ${bot.active === false ? "Pausado" : "Ativo"}</span>
+      </div>
+      <div class="button-row">
+        <button class="secondary-button" type="button" data-action="add-visual-step" data-id="${bot.id}">＋ Passo</button>
+        <button class="secondary-button" type="button" data-action="edit-visual-bot" data-id="${bot.id}">Editar bot</button>
+        <button class="secondary-button" type="button" data-action="delete-visual-bot" data-id="${bot.id}">Excluir bot</button>
+      </div>
+    </div>
+    <div class="salesbot-flow">
+      <div class="salesbot-start">▶ Início · ${escapeHtml(bot.trigger || "gatilho manual")}</div>
+      ${steps.map((step, index) => `
+        <div class="salesbot-arrow">↓</div>
+        <article class="salesbot-node ${escapeHtml(step.type || "message")}">
+          <div class="node-index">${index + 1}</div>
+          <div class="node-body">
+            <span class="chip ${salesbotStepTone(step.type)}">${escapeHtml(salesbotStepLabel(step.type))}</span>
+            <h3>${escapeHtml(step.title || "Passo")}</h3>
+            ${step.text ? `<p>${escapeHtml(step.text)}</p>` : ""}
+            ${step.extra ? `<p class="node-extra">⚙ ${escapeHtml(step.extra)}</p>` : ""}
+            ${(step.options || []).length ? `<div class="node-options">${step.options.map((option) => `<span>${escapeHtml(option)}</span>`).join("")}</div>` : ""}
+          </div>
+          <div class="node-actions">
+            <button type="button" title="Subir" data-action="move-visual-step" data-bot-id="${bot.id}" data-id="${step.id}" data-dir="up" ${index === 0 ? "disabled" : ""}>↑</button>
+            <button type="button" title="Descer" data-action="move-visual-step" data-bot-id="${bot.id}" data-id="${step.id}" data-dir="down" ${index === steps.length - 1 ? "disabled" : ""}>↓</button>
+            <button type="button" title="Editar" data-action="edit-visual-step" data-bot-id="${bot.id}" data-id="${step.id}">✎</button>
+            <button type="button" title="Inserir abaixo" data-action="add-visual-step" data-id="${bot.id}" data-after="${step.id}">＋</button>
+            <button type="button" title="Remover" data-action="delete-visual-step" data-bot-id="${bot.id}" data-id="${step.id}">×</button>
+          </div>
+        </article>
+      `).join("")}
+      ${steps.length ? `<div class="salesbot-arrow">↓</div><div class="salesbot-end">■ Fim do fluxo</div>` : emptyState("Nenhum passo. Clique em “＋ Passo”.")}
+    </div>
   `;
 }
 
@@ -840,6 +2030,214 @@ function renderBotRule(rule) {
   `;
 }
 
+function openWhatsAppTemplateModal(id = "") {
+  const tpl = getWhatsAppTemplate(id) || {
+    id: "",
+    name: "",
+    templateName: "",
+    type: "WhatsApp",
+    status: "Rascunho",
+    category: "Marketing",
+    language: "pt_BR",
+    wabaId: "",
+    body: "",
+    footer: "",
+    buttons: [],
+  };
+  openModal(`
+    <div class="modal-header">
+      <h2>${tpl.id ? "Editar modelo WhatsApp" : "Novo modelo WhatsApp"}</h2>
+      <button class="icon-button" type="button" data-action="close-modal" aria-label="Fechar">×</button>
+    </div>
+    <form data-form="wa-template" class="form-grid">
+      <input type="hidden" name="id" value="${escapeHtml(tpl.id)}" />
+      <div class="field"><label>Nome</label><input name="name" required value="${escapeHtml(tpl.name)}" /></div>
+      <div class="field"><label>Nome tecnico Meta</label><input name="templateName" required value="${escapeHtml(tpl.templateName)}" /></div>
+      <div class="field"><label>Status</label><select name="status">${["Aprovado", "Pendente", "Rascunho"].map((x) => `<option ${x === tpl.status ? "selected" : ""}>${x}</option>`).join("")}</select></div>
+      <div class="field"><label>Categoria</label><select name="category">${["Marketing", "Utility", "Authentication"].map((x) => `<option ${x === tpl.category ? "selected" : ""}>${x}</option>`).join("")}</select></div>
+      <div class="field"><label>Idioma</label><input name="language" value="${escapeHtml(tpl.language || "pt_BR")}" /></div>
+      <div class="field"><label>ID WABA</label><input name="wabaId" value="${escapeHtml(tpl.wabaId || "")}" /></div>
+      <div class="field full"><label>Corpo do texto</label><textarea name="body" required>${escapeHtml(tpl.body || "")}</textarea></div>
+      <div class="field full"><label>Botões (um por linha: id|titulo|url opcional)</label><textarea name="buttons">${escapeHtml((tpl.buttons || []).map((button) => [button.id, button.title, button.url].filter(Boolean).join("|")).join("\n"))}</textarea></div>
+      <div class="field full">
+        <label>Prévia</label>
+        ${renderWhatsAppTemplatePreview(tpl)}
+      </div>
+      <div class="modal-actions full">
+        <button class="secondary-button" type="button" data-action="close-modal">Cancelar</button>
+        <button class="primary-button" type="submit">Salvar modelo</button>
+      </div>
+    </form>
+  `);
+}
+
+function saveWhatsAppTemplate(data) {
+  const template = {
+    id: data.id || uid("tpl"),
+    name: clean(data.name),
+    templateName: clean(data.templateName),
+    type: "WhatsApp",
+    status: clean(data.status || "Rascunho"),
+    category: clean(data.category || "Marketing"),
+    language: clean(data.language || "pt_BR"),
+    wabaId: clean(data.wabaId || ""),
+    body: clean(data.body),
+    footer: "",
+    buttons: parseTemplateButtons(data.buttons),
+  };
+  state.whatsappTemplates = upsertById(state.whatsappTemplates || [], template);
+  closeModal();
+  saveAndRender("Modelo salvo.");
+}
+
+function deleteWhatsAppTemplate(id) {
+  const tpl = getWhatsAppTemplate(id);
+  if (!tpl) return;
+  if (!confirm(`Excluir modelo ${tpl.name}?`)) return;
+  state.whatsappTemplates = (state.whatsappTemplates || []).filter((item) => item.id !== id);
+  saveAndRender("Modelo excluido.");
+}
+
+function useTemplateInInbox(id) {
+  const tpl = getWhatsAppTemplate(id);
+  if (!tpl) return;
+  ui.view = "inbox";
+  ui.waMode = "template";
+  window.location.hash = "inbox";
+  render();
+  setTimeout(() => {
+    const select = document.querySelector("#wa-template-select");
+    if (select) select.value = id;
+  }, 0);
+  toast("Modelo selecionado no Inbox.");
+}
+
+function openVisualBotModal(id = "") {
+  const bot = getVisualBot(id) || { id: "", name: "", trigger: "Qualquer nova conversa", active: true, steps: [] };
+  openModal(`
+    <div class="modal-header">
+      <h2>${bot.id ? "Editar bot visual" : "Novo bot visual"}</h2>
+      <button class="icon-button" type="button" data-action="close-modal" aria-label="Fechar">×</button>
+    </div>
+    <form data-form="visual-bot" class="form-grid">
+      <input type="hidden" name="id" value="${escapeHtml(bot.id)}" />
+      <div class="field"><label>Nome</label><input name="name" required value="${escapeHtml(bot.name)}" /></div>
+      <div class="field"><label>Gatilho</label><input name="trigger" required value="${escapeHtml(bot.trigger || "")}" /></div>
+      <div class="field"><label>Status</label><select name="active"><option value="true" ${bot.active !== false ? "selected" : ""}>Ativo</option><option value="false" ${bot.active === false ? "selected" : ""}>Pausado</option></select></div>
+      <div class="modal-actions full">
+        <button class="secondary-button" type="button" data-action="close-modal">Cancelar</button>
+        <button class="primary-button" type="submit">Salvar bot</button>
+      </div>
+    </form>
+  `);
+}
+
+async function saveVisualBot(data) {
+  const current = getVisualBot(data.id);
+  const body = {
+    name: clean(data.name),
+    trigger: clean(data.trigger),
+    active: data.active !== "false",
+    steps: current?.steps || [],
+  };
+  const saved = data.id
+    ? await dbWrite(`/api/bots/${data.id}`, "PATCH", body)
+    : await dbWrite("/api/bots", "POST", body);
+  const bot = { id: saved?.id || data.id || uid("vbot"), ...body, steps: Array.isArray(saved?.steps) ? saved.steps : body.steps };
+  state.visualBots = upsertById(state.visualBots || [], bot);
+  ui.selectedVisualBotId = bot.id;
+  closeModal();
+  saveAndRender(saved ? "Bot salvo no banco." : "Bot salvo (offline).");
+}
+
+// Grava os passos/estado do bot no Postgres (steps são Json na tabela Bot).
+function persistBot(bot) {
+  if (!bot) return;
+  dbWrite(`/api/bots/${bot.id}`, "PATCH", { name: bot.name, trigger: bot.trigger, active: bot.active, steps: bot.steps || [] });
+}
+
+// stepId preenchido = edição; afterId = inserir logo após esse passo.
+function openVisualStepModal(botId, stepId = "", afterId = "") {
+  const bot = getVisualBot(botId);
+  if (!bot) return;
+  const step = stepId ? (bot.steps || []).find((s) => s.id === stepId) : null;
+  const sel = (v) => (step?.type === v ? "selected" : "");
+  openModal(`
+    <div class="modal-header">
+      <h2>${step ? "Editar passo" : "Novo passo"} · ${escapeHtml(bot.name)}</h2>
+      <button class="icon-button" type="button" data-action="close-modal" aria-label="Fechar">×</button>
+    </div>
+    <form data-form="visual-step" class="form-grid">
+      <input type="hidden" name="botId" value="${escapeHtml(bot.id)}" />
+      <input type="hidden" name="stepId" value="${escapeHtml(stepId)}" />
+      <input type="hidden" name="afterId" value="${escapeHtml(afterId)}" />
+      <div class="field"><label>Tipo</label><select name="type">${SALESBOT_STEP_TYPES.map((x) => `<option value="${x}" ${sel(x)}>${salesbotStepLabel(x)}</option>`).join("")}</select></div>
+      <div class="field"><label>Título</label><input name="title" required value="${escapeHtml(step?.title || "")}" /></div>
+      <div class="field full"><label>Texto / mensagem</label><textarea name="text">${escapeHtml(step?.text || "")}</textarea></div>
+      <div class="field full"><label>Opções / botões (uma por linha)</label><textarea name="options" placeholder="Pele\nUnhas\nCabelo">${escapeHtml((step?.options || []).join("\n"))}</textarea></div>
+      <div class="field full"><label>Configuração específica</label><input name="extra" value="${escapeHtml(step?.extra || "")}" placeholder="ex: tag, atraso, condição, bot" /><small class="muted">condição → palavra · ação → tag · pausa → atraso · iniciar bot → nome do bot</small></div>
+      <div class="modal-actions full">
+        <button class="secondary-button" type="button" data-action="close-modal">Cancelar</button>
+        <button class="primary-button" type="submit">${step ? "Salvar passo" : "Adicionar passo"}</button>
+      </div>
+    </form>
+  `);
+}
+
+function saveVisualStep(data) {
+  const bot = getVisualBot(data.botId);
+  if (!bot) return;
+  const steps = bot.steps || [];
+  const payload = {
+    type: clean(data.type || "message"),
+    title: clean(data.title),
+    text: clean(data.text),
+    extra: clean(data.extra),
+    options: String(data.options || "").split(/\r?\n/).map(clean).filter(Boolean),
+  };
+  if (data.stepId) {
+    const i = steps.findIndex((s) => s.id === data.stepId);
+    if (i >= 0) steps[i] = { ...steps[i], ...payload };
+  } else {
+    const step = { id: uid("step"), ...payload };
+    const after = data.afterId ? steps.findIndex((s) => s.id === data.afterId) : -1;
+    if (after >= 0) steps.splice(after + 1, 0, step);
+    else steps.push(step);
+  }
+  bot.steps = steps;
+  persistBot(bot);
+  closeModal();
+  saveAndRender(data.stepId ? "Passo atualizado." : "Passo adicionado.");
+}
+
+function deleteVisualStep(botId, stepId) {
+  const bot = getVisualBot(botId);
+  if (!bot) return;
+  bot.steps = (bot.steps || []).filter((step) => step.id !== stepId);
+  persistBot(bot);
+  saveAndRender("Passo removido.");
+}
+
+function moveVisualStep(botId, stepId, dir) {
+  const bot = getVisualBot(botId);
+  if (!bot) return;
+  const steps = bot.steps || [];
+  const i = steps.findIndex((s) => s.id === stepId);
+  const j = dir === "up" ? i - 1 : i + 1;
+  if (i < 0 || j < 0 || j >= steps.length) return;
+  [steps[i], steps[j]] = [steps[j], steps[i]];
+  persistBot(bot);
+  saveAndRender("Passo reordenado.");
+}
+
+function deleteVisualBot(botId) {
+  if (!confirm("Excluir este bot e todos os seus passos?")) return;
+  dbWrite(`/api/bots/${botId}`, "DELETE", {});
+  state.visualBots = (state.visualBots || []).filter((b) => b.id !== botId);
+  if (ui.selectedVisualBotId === botId) ui.selectedVisualBotId = state.visualBots[0]?.id || "";
+  saveAndRender("Bot excluído.");
+}
+
 function renderConfig() {
   appRoot().innerHTML = `
     <div class="config-grid">
@@ -890,6 +2288,32 @@ function renderConfig() {
           </button>
         </div>
         <input id="import-file" type="file" accept="application/json,.json" hidden />
+      </section>
+
+      <section class="panel">
+        <div class="section-header">
+          <h2>Papeis e permissoes</h2>
+          <span class="chip green">RBAC</span>
+        </div>
+        <div class="permission-grid">
+          ${renderPermissionRow("Admin", "todos os modulos", "auditoria completa")}
+          ${renderPermissionRow("Recepcao", "leads, inbox e agenda", "sem financeiro sensivel")}
+          ${renderPermissionRow("Financeiro", "orcamentos e pagamentos", "relatorios")}
+          ${renderPermissionRow("Marketing", "campanhas e origem", "dados agregados")}
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="section-header">
+          <h2>Governanca</h2>
+          <span class="chip amber">LGPD</span>
+        </div>
+        <div class="setup-list">
+          ${renderSetupItem("Auditoria de alteracoes", true, "AuditLog por entidade")}
+          ${renderSetupItem("Retencao de leads perdidos", false, "definir prazo operacional")}
+          ${renderSetupItem("Exportacao de dados", true, "JSON local e APIs")}
+          ${renderSetupItem("Prontuario separado", true, "sem dados clinicos sensiveis")}
+        </div>
       </section>
     </div>
   `;
@@ -960,7 +2384,10 @@ function renderLeadCard(lead) {
           <h3>${escapeHtml(lead.name)}</h3>
           <p>${escapeHtml(lead.interest)} · ${escapeHtml(lead.source)}</p>
         </div>
-        <span class="chip ${stageTone(lead.stage)}">${formatMoney(lead.value)}</span>
+        <div class="card-chips">
+          <span class="chip ${scoreTone(lead.score)}">Score ${lead.score || 0}</span>
+          <span class="chip ${stageTone(lead.stage)}">${formatMoney(lead.value)}</span>
+        </div>
       </div>
       <p>${escapeHtml(lead.nextStep)} · ${formatDate(lead.followUp)}</p>
       <div class="mini-actions">
@@ -1065,28 +2492,6 @@ function renderStageBar(stage) {
   `;
 }
 
-function renderScheduleRow(time) {
-  return `
-    <div class="schedule-cell time">${time}</div>
-    ${professionals.map((professional) => renderScheduleCell(time, professional)).join("")}
-  `;
-}
-
-function renderScheduleCell(time, professional) {
-  const appt = state.appointments.find(
-    (item) => item.date === ui.agendaDate && item.time === time && item.professional === professional,
-  );
-  if (!appt) return `<div class="schedule-cell"></div>`;
-  return `
-    <div class="schedule-cell">
-      <div class="event-pill ${appt.status.toLowerCase()}">
-        <div class="event-name">${escapeHtml(appt.patientName)}</div>
-        <div class="event-meta">${escapeHtml(appt.type)} · ${escapeHtml(appt.status)}</div>
-      </div>
-    </div>
-  `;
-}
-
 function renderTransaction(tx) {
   const tone = tx.status === "Pago" ? "green" : "amber";
   return `
@@ -1136,6 +2541,118 @@ function kpi(label, value, note, icon) {
       <div class="kpi-value">${value}</div>
       <div class="kpi-note">${note}</div>
     </article>
+  `;
+}
+
+function renderOpsMetric(label, value, note) {
+  return `
+    <article class="ops-metric">
+      <strong>${value}</strong>
+      <span>${escapeHtml(label)}</span>
+      <small>${escapeHtml(note)}</small>
+    </article>
+  `;
+}
+
+function renderConversationOps(lead) {
+  const tags = [
+    lead.source || "origem",
+    lead.stage === "proposta" ? "orcamento" : "qualificacao",
+    lead.autoMode ? "auto" : "humano",
+  ];
+  return `
+    <div class="conversation-ops">
+      <div class="summary-stat">
+        <div class="summary-label">Responsavel</div>
+        <div class="summary-value">Recepcao QARA</div>
+      </div>
+      <div class="summary-stat">
+        <div class="summary-label">Etiquetas</div>
+        <div class="tag-row">${tags.map((tag) => `<span class="chip primary">${escapeHtml(tag)}</span>`).join("")}</div>
+      </div>
+      <div class="summary-stat">
+        <div class="summary-label">Nota interna</div>
+        <div class="internal-note">${escapeHtml(lead.nextStep || "Acompanhar conversa")}</div>
+      </div>
+      <div class="summary-stat">
+        <div class="summary-label">SLA</div>
+        <div class="summary-value">${lead.followUp <= todayISO() ? "Atender hoje" : `Retorno ${formatDate(lead.followUp)}`}</div>
+      </div>
+    </div>
+  `;
+}
+
+function renderLeadListRow(lead) {
+  return `
+    <article class="record-row">
+      <div class="avatar">${initials(lead.name)}</div>
+      <div class="item-main">
+        <div class="item-title">${escapeHtml(lead.name)}</div>
+        <div class="item-meta">${escapeHtml(lead.source)} · ${escapeHtml(lead.interest)}</div>
+      </div>
+      <span class="chip ${stageTone(lead.stage)}">${escapeHtml(stageLabel(lead.stage))}</span>
+      <strong>${formatMoney(lead.value)}</strong>
+      <button type="button" data-action="select-lead" data-id="${lead.id}">Detalhe</button>
+    </article>
+  `;
+}
+
+function countAgendaConflicts(appointments) {
+  const seen = new Set();
+  let conflicts = 0;
+  appointments.forEach((appt) => {
+    const key = `${appt.professional}-${appt.time}`;
+    if (seen.has(key)) conflicts += 1;
+    seen.add(key);
+  });
+  return conflicts;
+}
+
+function freeSlotsForDate(date) {
+  const busy = state.appointments.filter((appt) => appt.date === date && appt.status !== "Cancelado").length;
+  return Math.max(times.length * professionals.length - busy, 0);
+}
+
+function renderBudgetCard(lead) {
+  const gross = Number(lead.value || 0);
+  const fee = Math.round(gross * 0.035);
+  const cost = Math.round(gross * 0.28);
+  const repass = Math.round(gross * 0.32);
+  const margin = gross - fee - cost - repass;
+  return `
+    <article class="budget-card">
+      <div class="budget-head">
+        <strong>${escapeHtml(lead.name)}</strong>
+        <span class="chip ${stageTone(lead.stage)}">${escapeHtml(stageLabel(lead.stage))}</span>
+      </div>
+      <div class="budget-lines">
+        <span>Bruto <strong>${formatMoney(gross)}</strong></span>
+        <span>Taxas <strong>${formatMoney(fee)}</strong></span>
+        <span>Custos <strong>${formatMoney(cost)}</strong></span>
+        <span>Margem <strong>${formatMoney(margin)}</strong></span>
+      </div>
+    </article>
+  `;
+}
+
+function renderWorkflowCard(name, note, status) {
+  const active = status === "ativo";
+  return `
+    <article class="workflow-card">
+      <span class="chip ${active ? "green" : "amber"}">${escapeHtml(status)}</span>
+      <strong>${escapeHtml(name)}</strong>
+      <small>${escapeHtml(note)}</small>
+    </article>
+  `;
+}
+
+function renderPermissionRow(role, scope, note) {
+  return `
+    <div class="permission-row">
+      <strong>${escapeHtml(role)}</strong>
+      <span>${escapeHtml(scope)}</span>
+      <small>${escapeHtml(note)}</small>
+    </div>
   `;
 }
 
@@ -1323,6 +2840,7 @@ function createLead(data) {
   addActivity(`Novo lead: ${newLead.name}.`, "blue");
   closeModal();
   saveAndRender("Lead criado.");
+  pushLeadToDb(newLead);
 }
 
 function createAppointment(data) {
@@ -1360,7 +2878,7 @@ function createAppointment(data) {
     text: `Agenda criada: ${formatDate(appt.date)} as ${appt.time} com ${shortProfessional(appt.professional)}.`,
     time: nowTime(),
   });
-  state.transactions.push({
+  const apptTx = {
     id: uid("tx"),
     description: `${appt.type} ${lead.name}`,
     category: appt.type,
@@ -1368,15 +2886,19 @@ function createAppointment(data) {
     dueDate: appt.date,
     status: "Pendente",
     leadId: lead.id,
-  });
+  };
+  state.transactions.push(apptTx);
   ui.agendaDate = appt.date;
   addActivity(`Agendamento criado para ${lead.name}.`, "primary");
   closeModal();
   saveAndRender("Agendamento criado.");
+  pushLeadStageToDb(lead, "agendado");
+  pushAppointmentToDb(appt);
+  pushTransactionToDb(apptTx);
 }
 
 function createTransaction(data) {
-  state.transactions.unshift({
+  const tx = {
     id: uid("tx"),
     description: clean(data.description),
     category: clean(data.category),
@@ -1384,9 +2906,11 @@ function createTransaction(data) {
     dueDate: data.dueDate,
     status: clean(data.status),
     leadId: data.leadId || "",
-  });
+  };
+  state.transactions.unshift(tx);
   closeModal();
   saveAndRender("Lancamento criado.");
+  pushTransactionToDb(tx);
 }
 
 function saveSettings(data) {
@@ -1413,6 +2937,7 @@ function moveLead(id, stage) {
   lead.nextStep = stage === "fechado" ? "Receber saldo e acompanhar satisfacao" : lead.nextStep;
   addActivity(`${lead.name} movido para ${stageLabel(stage)}.`, stageTone(stage));
   saveAndRender("Funil atualizado.");
+  pushLeadStageToDb(lead, stage);
 }
 
 function deleteLead(id) {
@@ -1488,6 +3013,316 @@ async function apiFetch(path, options = {}, retry = true) {
 
   sessionStorage.setItem(ADMIN_KEY_STORAGE, nextKey.trim());
   return apiFetch(path, options, false);
+}
+
+async function dbWrite(path, method, body, target) {
+  try {
+    const response = await apiFetch(
+      path,
+      {
+        method,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+      false,
+    );
+    if (!response.ok) return null;
+    const payload = await response.json();
+    if (target && payload.data?.id) {
+      target.dbId = payload.data.id;
+      persist();
+    }
+    return payload.data || null;
+  } catch {
+    return null;
+  }
+}
+
+async function loadOperations(showToast = false) {
+  ui.ops.loading = true;
+  ui.ops.error = "";
+  if (ui.view === "operations") renderOperations();
+  try {
+    const [briefingRes, pipelineRes, followupsRes] = await Promise.all([
+      apiFetch("/api/reports/daily-briefing", {}, false),
+      apiFetch("/api/reports/pipeline-analysis", {}, false),
+      apiFetch("/api/followups", {}, false),
+    ]);
+    if (!briefingRes.ok || !pipelineRes.ok || !followupsRes.ok) throw new Error("Nao foi possivel carregar a operacao.");
+    const [briefing, pipeline, followups] = await Promise.all([briefingRes.json(), pipelineRes.json(), followupsRes.json()]);
+    ui.ops.briefing = briefing.data || {};
+    ui.ops.pipeline = pipeline.data || {};
+    ui.ops.followups = followups.data || {};
+    if (showToast) toast("Operacao atualizada.");
+  } catch (error) {
+    ui.ops.error = error.message || "Erro ao carregar operacao.";
+  } finally {
+    ui.ops.loading = false;
+    if (ui.view === "operations") renderOperations();
+  }
+}
+
+async function downloadCsv(type) {
+  try {
+    const response = await apiFetch(`/api/export?type=${encodeURIComponent(type)}`, {}, false);
+    if (!response.ok) throw new Error("Exportacao indisponivel.");
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${type}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    toast("CSV exportado.");
+  } catch (error) {
+    toast(error.message || "Falha ao exportar CSV.");
+  }
+}
+
+async function importLeadsCsv(file) {
+  if (!file) return;
+  try {
+    const text = await file.text();
+    const response = await apiFetch("/api/import/leads", { method: "POST", headers: { "Content-Type": "text/csv" }, body: text }, false);
+    if (!response.ok) throw new Error("Importacao indisponivel.");
+    const payload = await response.json();
+    toast(`${payload.data?.imported || 0} lead(s) importado(s).`);
+    await hydrateLeadsFromDb();
+    await loadOperations();
+  } catch (error) {
+    toast(error.message || "Falha ao importar CSV.");
+  } finally {
+    const input = document.querySelector("#ops-csv-file");
+    if (input) input.value = "";
+  }
+}
+
+async function recalculateLeadScores() {
+  try {
+    const response = await apiFetch("/api/leads/score-all", { method: "POST" }, false);
+    if (!response.ok) throw new Error("Recalculo indisponivel.");
+    const payload = await response.json();
+    toast(`${payload.data?.updated || 0} lead(s) recalculado(s).`);
+    await hydrateLeadsFromDb();
+    await loadOperations();
+  } catch (error) {
+    toast(error.message || "Falha ao recalcular scores.");
+  }
+}
+
+async function copyText(text, message = "Copiado.") {
+  try {
+    await navigator.clipboard.writeText(text);
+    toast(message);
+  } catch {
+    toast(text);
+  }
+}
+
+// ───── Cutover de Leads para o banco (best-effort, sem apagar leads locais) ─────
+
+function mapDbLeadToUi(d) {
+  return {
+    id: `db-${d.id}`,
+    dbId: d.id,
+    name: d.name,
+    phone: d.phone || "",
+    email: d.email || "",
+    source: d.source || "Banco",
+    interest: d.interest || "Atendimento",
+    stage: STAGE_DB_TO_UI[d.stage] || "entrada",
+    score: Number(d.score || 0),
+    temperature: d.temperature || "",
+    classification: d.classification || null,
+    value: Number(d.estimatedValue || state.clinic.defaultConsultValue),
+    nextStep: d.nextAction || "Acompanhar lead",
+    followUp: d.nextActionAt ? String(d.nextActionAt).slice(0, 10) : todayISO(),
+    autoMode: true,
+    createdAt: d.createdAt ? String(d.createdAt).slice(0, 10) : todayISO(),
+    messages: [],
+  };
+}
+
+// ESPELHA os leads do banco no estado. Quando o banco tem leads reais, ele vira
+// fonte visual do Funil e os dados demo locais deixam de aparecer.
+async function hydrateLeadsFromDb() {
+  try {
+    const response = await apiFetch("/api/leads", {}, false);
+    if (!response.ok) return;
+    const payload = await response.json();
+    const dbLeads = payload.data || [];
+    const before = JSON.stringify(state.leads.map((lead) => [lead.id, lead.dbId, lead.name, lead.phone, lead.stage, lead.score]));
+
+    if (dbLeads.length) {
+      const localUnsynced = state.leads.filter((lead) => !lead.dbId && !isSeedDemoLead(lead));
+      state.leads = [...dbLeads.map(mapDbLeadToUi), ...localUnsynced];
+      state.appointments = state.appointments.filter((appt) => !isSeedDemoRecord(appt.id, "appt") && !isSeedDemoLeadId(appt.leadId));
+      state.transactions = state.transactions.filter((tx) => !isSeedDemoRecord(tx.id, "tx") && !isSeedDemoLeadId(tx.leadId));
+    } else {
+      state.leads = state.leads.filter((lead) => !lead.dbId);
+    }
+
+    const after = JSON.stringify(state.leads.map((lead) => [lead.id, lead.dbId, lead.name, lead.phone, lead.stage, lead.score]));
+    const changed = before !== after;
+    if (changed) {
+      persist();
+      render();
+      if (dbLeads.length) toast(`${dbLeads.length} lead(s) sincronizado(s) do banco.`);
+    }
+  } catch {
+    /* offline: segue com localStorage */
+  }
+}
+
+// Bots: banco é a fonte de verdade. Primeira execução sobe os bots semente locais.
+async function hydrateBotsFromDb() {
+  try {
+    const res = await apiFetch("/api/bots", {}, false);
+    if (!res.ok) return;
+    let dbBots = (await res.json()).data || [];
+    if (!dbBots.length && (state.visualBots || []).length) {
+      for (const b of state.visualBots) {
+        const created = await dbWrite("/api/bots", "POST", { name: b.name, trigger: b.trigger, active: b.active, steps: b.steps || [] });
+        if (created) dbBots.push(created);
+      }
+    }
+    if (!dbBots.length) return;
+    state.visualBots = dbBots.map((b) => ({
+      id: b.id, name: b.name, trigger: b.trigger, active: b.active,
+      steps: Array.isArray(b.steps) ? b.steps : [],
+    }));
+    if (!state.visualBots.some((b) => b.id === ui.selectedVisualBotId)) ui.selectedVisualBotId = state.visualBots[0]?.id || "";
+    persist();
+    if (ui.view === "bots") render();
+  } catch {
+    /* offline: segue com localStorage */
+  }
+}
+
+function isSeedDemoLead(lead) {
+  return isSeedDemoLeadId(lead?.id);
+}
+
+function isSeedDemoLeadId(id) {
+  return /^lead-\d+$/.test(String(id || ""));
+}
+
+function isSeedDemoRecord(id, prefix) {
+  return new RegExp(`^${prefix}-\\d+$`).test(String(id || ""));
+}
+
+function pushLeadToDb(lead) {
+  return dbWrite("/api/leads", "POST", {
+    name: lead.name,
+    phone: lead.phone,
+    source: lead.source,
+    interest: lead.interest,
+    stage: STAGE_UI_TO_DB[lead.stage] || "NEW",
+    estimatedValue: lead.value,
+    nextAction: lead.nextStep,
+  }, lead);
+}
+
+// Atualiza a etapa do lead no banco (se ele tiver dbId).
+function pushLeadStageToDb(lead, uiStage) {
+  if (!lead.dbId) return;
+  dbWrite(`/api/leads/${lead.dbId}`, "PATCH", { stage: STAGE_UI_TO_DB[uiStage] || "NEW" });
+}
+
+// ───── Cutover de Agenda (medicos reais) e Financeiro (lancamentos = pagamentos) ─────
+
+const APPT_STATUS_UI_TO_DB = { Confirmado: "CONFIRMED", Cancelado: "CANCELED", Agendado: "SCHEDULED" };
+const APPT_STATUS_DB_TO_UI = { CONFIRMED: "Confirmado", CANCELED: "Cancelado", SCHEDULED: "Agendado", NO_SHOW: "Cancelado", ATTENDED: "Confirmado" };
+const PAY_STATUS_UI_TO_DB = { Pago: "PAID", Pendente: "PENDING" };
+
+// Carrega o mapa nome->id dos profissionais do banco.
+async function hydrateProfessionalsFromDb() {
+  try {
+    const response = await apiFetch("/api/professionals", {}, false);
+    if (!response.ok) return;
+    const payload = await response.json();
+    (payload.data || []).forEach((p) => {
+      professionalDbIdByName[p.name] = p.id;
+    });
+  } catch {
+    /* offline */
+  }
+}
+
+// Grava uma consulta nova no banco (resolve profissional + lead pelo nome/dbId).
+function pushAppointmentToDb(appt) {
+  const professionalId = professionalDbIdByName[appt.professional];
+  if (!professionalId) return; // profissional nao mapeado: fica so local
+  const lead = getLead(appt.leadId);
+  const startAt = new Date(`${appt.date}T${appt.time || "09:00"}:00`).toISOString();
+  return dbWrite("/api/appointments", "POST", {
+    professionalId,
+    leadId: lead?.dbId || null,
+    startAt,
+    status: APPT_STATUS_UI_TO_DB[appt.status] || "CONFIRMED",
+    value: appt.value,
+  }, appt);
+}
+
+function pushAppointmentStatusToDb(appt) {
+  if (!appt.dbId) return;
+  dbWrite(`/api/appointments/${appt.dbId}`, "PATCH", { status: APPT_STATUS_UI_TO_DB[appt.status] || "SCHEDULED" });
+}
+
+// Lancamento -> Payment no banco (valor + status). Descricao/categoria ficam so na UI.
+function pushTransactionToDb(tx) {
+  return dbWrite("/api/payments", "POST", {
+    amount: tx.amount,
+    method: "PIX",
+    status: PAY_STATUS_UI_TO_DB[tx.status] || "PENDING",
+  }, tx);
+}
+
+function pushTransactionPaidToDb(tx) {
+  if (!tx.dbId) return;
+  dbWrite(`/api/payments/${tx.dbId}`, "PATCH", { status: "PAID", paidAt: new Date().toISOString() });
+}
+
+// Espelha as consultas do banco no estado (igual aos leads): dbId reflete o banco.
+async function hydrateAppointmentsFromDb() {
+  try {
+    const response = await apiFetch("/api/appointments", {}, false);
+    if (!response.ok) return;
+    const payload = await response.json();
+    const dbAppts = payload.data || [];
+    const dbIds = new Set(dbAppts.map((a) => a.id));
+    state.appointments = state.appointments.filter((a) => !a.dbId || dbIds.has(a.dbId));
+    let changed = false;
+    dbAppts.forEach((a) => {
+      const start = new Date(a.startAt);
+      const existing = state.appointments.find((x) => x.dbId === a.id);
+      const mapped = {
+        date: start.toISOString().slice(0, 10),
+        time: start.toTimeString().slice(0, 5),
+        professional: a.professional?.name || "",
+        status: APPT_STATUS_DB_TO_UI[a.status] || "Confirmado",
+        value: Number(a.value || 0),
+        type: a.appointmentType?.name || "Consulta",
+        patientName: a.lead?.name || a.patient?.name || "Paciente",
+        leadId: a.lead?.id ? `db-${a.lead.id}` : "",
+      };
+      if (existing) {
+        if (existing.leadId !== mapped.leadId) changed = true;
+        Object.assign(existing, mapped);
+      } else {
+        state.appointments.push({ id: `db-${a.id}`, dbId: a.id, leadId: "", ...mapped });
+        changed = true;
+      }
+    });
+    if (changed) {
+      persist();
+      render();
+    }
+  } catch {
+    /* offline */
+  }
 }
 
 async function runServerAgentForLead(lead, text) {
@@ -1809,6 +3644,8 @@ function markTransactionPaid(id) {
   tx.status = "Pago";
   addActivity(`Recebimento baixado: ${tx.description}.`, "green");
   saveAndRender("Recebimento baixado.");
+  if (tx.dbId) pushTransactionPaidToDb(tx);
+  else pushTransactionToDb(tx);
 }
 
 function updateAppointmentStatus(id, status) {
@@ -1817,6 +3654,7 @@ function updateAppointmentStatus(id, status) {
   appt.status = status;
   addActivity(`${appt.patientName}: agenda ${status.toLowerCase()}.`, status === "Cancelado" ? "red" : "green");
   saveAndRender("Agenda atualizada.");
+  pushAppointmentStatusToDb(appt);
 }
 
 function exportData() {
@@ -2034,6 +3872,83 @@ function getLead(id) {
   return state.leads.find((leadItem) => leadItem.id === id);
 }
 
+function getWhatsAppTemplate(id) {
+  return (state.whatsappTemplates || []).find((template) => template.id === id) || null;
+}
+
+function renderTemplatePreview(template, params = []) {
+  if (!template) return "";
+  let body = template.body || "";
+  params.forEach((value, index) => {
+    body = body.replaceAll(`{{${index + 1}}}`, value);
+  });
+  return body;
+}
+
+function parseTemplateButtons(value) {
+  return String(value || "")
+    .split(/\r?\n/)
+    .map((line, index) => {
+      const [id, title, url] = line.split("|").map(clean);
+      if (!title) return null;
+      return { id: id || `btn_${index + 1}`, title, ...(url ? { url } : {}) };
+    })
+    .filter(Boolean)
+    .slice(0, 3);
+}
+
+function getVisualBot(id) {
+  return (state.visualBots || []).find((bot) => bot.id === id) || null;
+}
+
+function upsertById(list, item) {
+  const next = [...(list || [])];
+  const index = next.findIndex((entry) => entry.id === item.id);
+  if (index >= 0) next[index] = item;
+  else next.unshift(item);
+  return next;
+}
+
+const SALESBOT_STEP_TYPES = ["message", "buttons", "list", "condition", "action", "handoff", "pause", "start", "finish"];
+
+function salesbotStepLabel(type) {
+  return {
+    message: "Enviar mensagem",
+    buttons: "Botões",
+    list: "Lista",
+    condition: "Condição",
+    action: "Ação / Tag",
+    handoff: "Humano",
+    pause: "Pausa",
+    start: "Iniciar bot",
+    finish: "Fim",
+  }[type] || "Passo";
+}
+
+function salesbotStepTone(type) {
+  return {
+    message: "primary",
+    buttons: "green",
+    list: "green",
+    condition: "amber",
+    action: "violet",
+    handoff: "red",
+    pause: "blue",
+    start: "green",
+    finish: "red",
+  }[type] || "primary";
+}
+
+// Rótulo do campo "extra" por tipo (config específica do passo).
+function salesbotExtraLabel(type) {
+  return {
+    condition: "Condição (palavra/opção, ex: unha, 1, Pele)",
+    action: "Tag a aplicar (ex: Cirurgia)",
+    pause: "Atraso (ex: 23h, 1 dia)",
+    start: "Bot a iniciar (ex: Acompanhamento 1 dia)",
+  }[type] || "Configuração (opcional)";
+}
+
 function getSelectedLead() {
   return getLead(ui.selectedLeadId) || state.leads[0];
 }
@@ -2050,6 +3965,13 @@ function stageLabel(stageId) {
 
 function stageTone(stageId) {
   return stages.find((stage) => stage.id === stageId)?.tone || "primary";
+}
+
+function scoreTone(score) {
+  const value = Number(score || 0);
+  if (value >= 70) return "green";
+  if (value >= 40) return "amber";
+  return "blue";
 }
 
 function toggleMenu() {
@@ -2106,6 +4028,10 @@ function nowTime() {
 
 function formatDate(value) {
   return new Intl.DateTimeFormat("pt-BR", { day: "2-digit", month: "short" }).format(parseISODate(value));
+}
+
+function formatDateTime(value) {
+  return new Intl.DateTimeFormat("pt-BR", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }).format(new Date(value));
 }
 
 function parseISODate(value) {

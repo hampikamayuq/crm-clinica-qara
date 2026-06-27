@@ -15,6 +15,7 @@
     <meta property="og:type" content="website" />
     <meta name="theme-color" content="#0e766e" />
     <title>CliniQara CRM</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -52,6 +53,10 @@
           <button class="nav-item" type="button" data-view="leads">
             <span aria-hidden="true">▦</span>
             Funil
+          </button>
+          <button class="nav-item" type="button" data-view="operations">
+            <span aria-hidden="true">▣</span>
+            Operacao
           </button>
           <button class="nav-item" type="button" data-view="agenda">
             <span aria-hidden="true">◧</span>
@@ -94,6 +99,10 @@
           <div>
             <h1 id="page-title">Hoje</h1>
             <p id="page-kicker">Operacao comercial da clinica</p>
+          </div>
+          <div class="global-search">
+            <input id="global-search" class="search-input" type="search" autocomplete="off" placeholder="Buscar lead, telefone, origem..." />
+            <div id="global-search-results" class="search-results" hidden></div>
           </div>
           <div class="topbar-actions">
             <button class="ghost-button" type="button" data-action="export-data">

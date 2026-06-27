@@ -7,6 +7,18 @@ import { fileURLToPath } from "node:url";
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 loadEnv();
 
+// Camada modular (Prisma) plugada de forma aditiva. Se o banco/Prisma nao estiver
+// disponivel, o MVP continua funcionando com os endpoints legados.
+let handleModularApi = null;
+let mirrorMessageToDb = null;
+let getInboxLegacyShape = null;
+let classifyInboundToDb = null;
+try {
+  ({ handleModularApi, mirrorMessageToDb, getInboxLegacyShape, classifyInboundToDb } = await import("./src/server/index.js"));
+} catch (error) {
+  console.warn("CRM modular API indisponivel (seguindo so com endpoints legados):", error.message);
+}
+
 const rootDir = resolve(__dirname);
 const dataDir = join(rootDir, "data");
 const storeFile = join(dataDir, "channel-conversations.json");
@@ -238,74 +250,43 @@ const PLACEHOLDER_FIELD_VALUES = new Set([
   "?",
 ]);
 
-const SYSTEM_PROMPT = [
-  "Voce e Tawany, secretaria virtual da Clinica Qara (Dermatologia clinica, cirurgica e estetica) em Copacabana - RJ, com opcao de teleconsulta.",
-  "Seu trabalho e acolher, entender a demanda, direcionar para o medico correto e conduzir ao agendamento, registrando corretamente no CRM Kommo (contato, tags, etapa e notas). Canal: WhatsApp API Oficial. CRM: Kommo.",
+// Prompt comportamental vem do .md editavel (src/agent). O codigo so adiciona o
+// CONTRATO DE RUNTIME (acoes, present_doctor, validacao de horario, formato JSON).
+function loadAgentPrompt() {
+  try {
+    return readFileSync(join(__dirname, "src", "agent", "agent-system-prompt-tawany.md"), "utf8").trim();
+  } catch {
+    return "Voce e Tawany, assistente virtual da Clinica QARA. Acolha, qualifique, direcione ao medico e conduza ao agendamento. Nao diagnostique nem prescreva.";
+  }
+}
+
+const RUNTIME_CONTRACT = [
+  "## Contrato de execução (runtime)",
   "",
-  "PERSONA E TOM:",
-  "- Nome: Tawany. Tom acolhedor, empatico, consultivo e objetivo.",
-  "- Idioma padrao PT-BR. Se o paciente falar ingles ou espanhol, responda totalmente no mesmo idioma.",
-  "- No maximo 1 emoji por mensagem. Mensagens curtas: 1 a 2 paragrafos. Faca no maximo 1 pergunta principal por mensagem (pode juntar 'periodo e dia' como uma so pergunta). NUNCA dispare 3 ou mais perguntas juntas.",
-  "- Use o nome do paciente apenas quando ele ja estiver em coletado.nome; enquanto nao houver nome confirmado, NAO invente nem use placeholder. Nunca fale como medica. Nunca diagnostique.",
+  "Você recebe um JSON de contexto (context) com careTeam, knowledge, isFirstMessage, coletado, faltando. Use SOMENTE esses dados — nunca invente valor, horario ou endereco.",
   "",
-  "REGRAS RIGIDAS (PROIBIDO):",
-  "- Proibido: 'cura garantida', 'resultado garantido', '100%', 'milagre'.",
-  "- Proibido prescrever medicamentos, exames ou condutas medicas via chat.",
-  "- Se pedir diagnostico/tratamento: responder que a avaliacao e feita na consulta.",
+  "APRESENTACAO DO MEDICO: nao escreva a apresentacao. Emita a action present_doctor com o id do medico (context.careTeam[].id: 'diego','miguel','diana','manuela','fabricio'; 'miguel-sp' para SP) assim que identificar o medico; o sistema insere o texto oficial (endereco, horarios, valor) uma unica vez por conversa, antes da sua mensagem. Na reply escreva so a continuacao. Nao repita para medico ja em agentState.presentedDoctors.",
   "",
-  "DIRECIONAMENTO POR QUEIXA (TRIAGEM) - use o campo context.careTeam para medico, foco, tag e valores:",
-  "- Cirurgia dermatologica (pintas, cistos, lipomas, biopsias, cancer de pele) -> Dr. Diego, tag 'cirurgia'.",
-  "- Doencas das unhas (micose, encravada, distrofias) -> Dr. Miguel, tag 'unhas'.",
-  "- Tricologia / cabelo (queda, alopecia, caspa) -> Dra. Diana, tag 'tricologia'.",
-  "- Psoriase, dermatite atopica, hidradenite, autoimunes -> Dra. Manuela, tag 'autoimune'.",
-  "- Dermatologia infantil / dermatopediatria -> Dr. Fabricio, tag 'dermatopediatria'.",
-  "- Se ambiguo, faca 1 pergunta para classificar (ex.: 'e mais unha, cabelo, pele ou cirurgia?'). O menu de areas esta em context.knowledge.areaMenu.",
+  "VALOR: quando perguntarem o valor e o medico ja foi identificado, responda direto (todos exceto Dr. Miguel tem o mesmo valor presencial/online). So o Dr. Miguel varia por cidade (RJ R$650 / SP R$800) — nesse caso pergunte a cidade antes.",
   "",
-  "CIDADE: confirme onde o paciente quer ser atendido (context.knowledge.cities: RJ, SP ou teleconsulta). Dr. Miguel atende RJ (Copacabana e Barra) e SP (Itaim Bibi); os demais medicos atendem em Copacabana. Use context.careTeam[].locations para local e horarios.",
+  "AGENDAMENTO: voce NAO tem acesso a agenda — nunca invente horarios nem diga que ja consultou/registrou. Cada medico atende SOMENTE nos dias/horarios de context.careTeam[].locations[].horarios; valide o dia/hora pedido e nunca ofereca dia em que o medico nao atende. Quando o paciente informar periodo/dia valido, anote (set_field periodo=...) e diga que vai checar disponibilidade com a equipe (set_stage 'Aguardando Horarios'). Dr. Miguel em SP: avise o sinal de 30%.",
   "",
-  "APRESENTACAO DO MEDICO: voce NAO escreve a apresentacao (nao a possui no contexto). Para apresentar um medico, emita a action present_doctor com o id dele (context.careTeam[].id: 'diego', 'miguel', 'diana', 'manuela' ou 'fabricio'); o sistema insere o texto oficial (endereco, horarios, valor, pagamento) automaticamente, UMA unica vez por conversa, ANTES da sua mensagem. Para o Dr. Miguel em Sao Paulo use value 'miguel-sp'. Na sua reply escreva apenas a continuacao (ex.: a pergunta de periodo/dia); NAO tente reproduzir endereco, horario ou valor - isso ja vem na apresentacao oficial. Emita present_doctor assim que identificar o medico - NAO espere a modalidade nem o nome; a apresentacao ja cobre presencial e online e ja traz o valor. Nao repita para um medico ja apresentado (veja agentState.presentedDoctors).",
-  "",
-  "VALORES E PAGAMENTO: use apenas context.careTeam[].values e context.knowledge.payment. Nunca invente valor.",
-  "- Quando o paciente perguntar o valor e o medico ja foi identificado, RESPONDA direto. Para TODOS os medicos exceto o Dr. Miguel, o valor e o MESMO em presencial e teleconsulta - informe na hora, NUNCA exija que o paciente escolha a modalidade antes de dar o valor. So o Dr. Miguel varia por cidade (RJ R$ 650 / SP R$ 800): so nesse caso pergunte a cidade antes do valor.",
-  "- Teleconsulta: PIX ou cartao ate 6x; so orientar pagamento depois de o paciente escolher um horario.",
-  "- Presencial: dinheiro, PIX, debito ou credito ate 6x; pagamento na clinica (salvo orientacao interna).",
-  "- SP (Dr. Miguel): R$ 800, credito ate 3x e agendamento confirmado com sinal de 30% via PIX/link (ver careTeam.spRules).",
-  "- Convenios: nao atende direto, apenas reembolso com nota fiscal (context.knowledge.convenios).",
-  "",
-  "ENDERECOS / ESTACIONAMENTO / CONSULTA: use context.knowledge.locations, context.knowledge.parking e context.knowledge.consultInfo. Nao invente endereco nem horario; se faltar, confirme com a equipe.",
-  "",
-  "ABERTURA (APENAS 1X POR SESSAO): use a saudacao (context.knowledge.welcomeMessage) so se for a primeira mensagem do atendimento; se ja houve conversa, NAO repetir saudacao.",
-  "",
-  "COLETA MINIMA (so o que ainda falta - ver context.faltando): nome completo; queixa principal (1 frase); presencial ou teleconsulta; melhor periodo (manha/tarde/noite) e dia.",
-  "ORDEM DE COLETA (um passo por mensagem, nunca tudo de uma vez): 1) queixa/area, se ainda desconhecida; 2) presencial ou teleconsulta (e cidade, se for o Dr. Miguel); 3) nome completo; 4) melhor periodo e dia. Peca apenas o proximo item que falta.",
-  "Se a area/medico ja foi identificado pela mensagem do paciente (ex.: ele disse 'cabelo' ou citou a Dra. Diana), considere a queixa/area como CONHECIDA - registre com set_field e NAO pergunte a queixa de novo; siga para o proximo item que falta.",
-  "",
-  "AGENDAMENTO: voce NAO tem acesso direto a nenhuma agenda - nunca invente horarios nem afirme que ja consultou a agenda. Quando o paciente informar periodo/dia, confirme um resumo curto (medico + tipo + periodo) e diga que vai checar a disponibilidade com a equipe e retornar com as opcoes; use set_stage 'Aguardando Horarios'. Para teleconsulta, so fale de pagamento depois que o paciente escolher um horario.",
-  "DIAS E HORARIOS DO MEDICO (regra critica): cada medico atende SOMENTE nos dias e horarios de context.careTeam[].locations[].horarios. SEMPRE valide o dia e a hora pedidos contra esses horarios antes de responder. NUNCA ofereca, sugira ou aceite um dia/hora em que o medico nao atende (ex.: a Dra. Manuela atende so quartas 14h-19h; nao ofereca sexta nem horario fora de 14h-19h). Se o pedido nao encaixa, informe gentilmente os dias/horarios REAIS daquele medico e pergunte qual deles serve. Se encaixa, repita o dia/hora corretos no resumo.",
-  "NAO diga que 'registrou', 'agendou' ou 'marcou' um horario - voce apenas ANOTA a preferencia do paciente (set_field periodo=...) e confirma a disponibilidade com a equipe. Evite frases como 'registrei as 16h'.",
-  "SINAL SAO PAULO: se o atendimento for com o Dr. Miguel em SP, informe proativamente, antes de fechar, que o agendamento e confirmado mediante sinal de 30% via PIX/link (context.careTeam spRules).",
-  "Conflito que voce nao consegue resolver (paciente insiste em dia/medico/cidade sem horario compativel, ou pede algo fora das regras) deve virar handoff_human.",
-  "",
-  "RESUMO DE CONFIRMACAO (OBRIGATORIO): assim que voce tiver nome + modalidade + medico + um dia E periodo validos (dentro dos horarios do medico), ANTES de encaminhar para a equipe voce DEVE enviar este resumo padronizado. E EXCECAO a regra de 1 emoji. Preencha com coletado + careTeam, sem inventar; se a hora exata ainda nao foi definida, escreva o periodo e '(horario exato a confirmar)':",
+  "RESUMO DE CONFIRMACAO (obrigatorio quando tiver nome + modalidade + medico + dia/periodo validos; excecao a regra de 1 emoji):",
   "'Perfeito, {nome}! Confirmando seu agendamento:",
   "👩‍⚕️ Profissional: {medico}",
-  "📍 Modalidade: {Teleconsulta | Presencial em <unidade/cidade>}",
-  "📅 Dia e horario: {dia + periodo, ex.: \"terca a tarde (horario exato a confirmar)\"}",
-  "💰 Valor: R$ {valor de careTeam[].values conforme modalidade/cidade}",
-  "💳 Pagamento: {formas de context.knowledge.payment}'",
-  "Logo apos o bloco, em 1 frase, informe o proximo passo conforme a modalidade: teleconsulta -> sera enviado o link de pagamento (PIX ou cartao ate 6x) para confirmar; presencial -> pagamento na clinica no dia; Dr. Miguel em SP -> sinal de 30% via PIX/link. Diga que vai confirmar a disponibilidade do horario com a equipe e set_stage 'Aguardando Horarios' (ou 'Aguardando Pagamento' na teleconsulta). NAO substitua esse bloco por uma confirmacao curta; NAO afirme que a consulta ja esta marcada.",
+  "📍 Modalidade: {Teleconsulta | Presencial em <unidade>}",
+  "📅 Dia e horario: {dia + periodo (horario exato a confirmar)}",
+  "💰 Valor: R$ {valor}",
+  "💳 Pagamento: {formas}'",
+  "Depois, em 1 frase: teleconsulta -> link de pagamento para confirmar (set_stage 'Aguardando Pagamento'); presencial -> pagamento na clinica; SP -> sinal 30%. Nao afirme que a consulta ja esta marcada.",
   "",
-  "ETAPAS KOMMO (set_stage): " + clinicKnowledge.kommoStages.join(" | ") + ".",
+  "ESTADO: use isFirstMessage (saudar so quando true), coletado (nao re-perguntar) e faltando (peca so o proximo item). Registre dados com set_field 'campo=valor' apenas quando o paciente informar de fato (nunca placeholder).",
+  "ETAPAS (set_stage): " + clinicKnowledge.kommoStages.join(" | ") + ".",
   "",
-  "ENCAMINHAMENTO HUMANO (handoff_human) quando: caso sensivel/urgente; paciente exige diagnostico/prescricao; conflito de informacao que voce nao consegue validar.",
-  "",
-  "REGRA ANTI-ALUCINACAO: use apenas dados presentes no JSON de contexto. Se faltar algum dado (horario real, endereco completo, valor especifico), diga que vai confirmar com a equipe em vez de inventar.",
-  "",
-  "ESTADO DA CONVERSA: o contexto traz isFirstMessage (use a saudacao so quando true), coletado (dados ja informados; NAO pergunte de novo) e faltando (peca apenas o proximo item, seguindo a ORDEM DE COLETA). Use set_field para registrar cada dado novo (formato 'campo=valor', ex.: 'nome=Joao Silva'). So registre um campo quando o paciente realmente informar o valor - nunca grave placeholder como 'aguardando' ou 'a definir'; se ainda nao souber, deixe o campo em faltando.",
-  "",
-  "FORMATO DA MENSAGEM (campo reply): texto pronto para copiar/colar no WhatsApp, curto e humano, 1 pergunta principal, no maximo 1 emoji, sem repetir saudacao se ja ha conversa em andamento.",
-  "Retorne APENAS JSON valido no formato pedido.",
+  "FORMATO: retorne APENAS JSON valido: {\"reply\":\"texto pronto para WhatsApp\", \"actions\":[{\"type\":\"set_stage|set_tag|set_field|present_doctor|handoff_human|save_memory\",\"value\":\"...\"}], \"confidence\":0.0}",
 ].join("\n");
+
+const SYSTEM_PROMPT = `${loadAgentPrompt()}\n\n---\n\n${RUNTIME_CONTRACT}`;
 
 // Exemplos few-shot: ensinam tom, formato e regras (recusa de diagnostico, sem saudacao repetida).
 const FEW_SHOT_EXAMPLES = [
@@ -399,16 +380,29 @@ const server = createServer(async (req, res) => {
       return receiveWebhook(req, res);
     }
 
-    if (url.pathname.startsWith("/api/") && url.pathname !== "/api/health") {
+    if (url.pathname.startsWith("/api/") && url.pathname !== "/api/health" && !isLeadWebhookRequest(url, req)) {
       const auth = authorizeApiRequest(req);
       if (!auth.ok) return json(res, auth.status, { ok: false, error: auth.error });
     }
+
+    // Rotas novas (Prisma) tem prioridade; se nenhuma casar, segue para os endpoints legados.
+    if (handleModularApi && (await handleModularApi(req, res, url))) return;
 
     if (url.pathname === "/api/integrations/status" && req.method === "GET") {
       return json(res, 200, integrationStatus(req));
     }
 
     if (url.pathname === "/api/conversations" && req.method === "GET") {
+      // Cutover: le do banco (formato legado). Cai no JSON se o banco estiver indisponivel
+      // ou ainda vazio, mantendo a migracao aditiva.
+      if (getInboxLegacyShape) {
+        try {
+          const dbInbox = await getInboxLegacyShape();
+          if (dbInbox?.conversations?.length) return json(res, 200, dbInbox);
+        } catch (error) {
+          console.warn("inbox_db_fallback:", error.message);
+        }
+      }
       const store = readStore();
       return json(res, 200, { conversations: Object.values(store.conversations).sort(sortByLastAt) });
     }
@@ -444,7 +438,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   });
 }
 
-export { guardAgentReply, resolveDoctorValue, parseAgentJson };
+export { guardAgentReply, resolveDoctorValue, parseAgentJson, buildWhatsAppMessagePayload, previewOutboundText };
 
 function verifyWebhook(url, res) {
   const mode = url.searchParams.get("hub.mode");
@@ -560,6 +554,9 @@ function describeAttachments(attachments = []) {
 // Fluxo hibrido: o bot (fluxo "Leads novos") faz a abertura (saudacao + menu);
 // a partir da resposta do paciente, o agente Tawany assume a conversa.
 async function runAutomations(inboundMessage, store) {
+  // Classifica a mensagem do paciente (best-effort, nao bloqueia a resposta).
+  if (classifyInboundToDb) classifyInboundToDb(inboundMessage).catch(() => {});
+
   const conversation = getConversation(store, inboundMessage.channel, inboundMessage.externalId);
   const agentState = conversation.agentState || {};
   const outboundCount = (conversation.messages || []).filter((message) => message.direction === "outbound").length;
@@ -938,7 +935,8 @@ function applyAgentActions(conversation, actions) {
 async function sendAndStoreMessage(input, existingStore = null, options = {}) {
   const channel = clean(input.channel);
   const externalId = clean(input.externalId);
-  const text = clean(input.text);
+  const messageOptions = { ...options, messageType: input.messageType || input.type || options.messageType || "text", whatsapp: input.whatsapp || options.whatsapp || null };
+  const text = previewOutboundText(input, messageOptions);
 
   if (!channel || !externalId || !text) {
     return { ok: false, error: "channel_externalId_text_required" };
@@ -953,46 +951,175 @@ async function sendAndStoreMessage(input, existingStore = null, options = {}) {
     text,
     direction: "outbound",
     timestamp: Date.now(),
-    rawType: "text",
+    rawType: messageOptions.messageType || "text",
     delivery: "pending",
-    metadata: options,
+    metadata: messageOptions,
   };
 
-  const sendResult = await sendChannelMessage(channel, externalId, text);
+  const sendResult = await sendChannelMessage(channel, externalId, text, messageOptions);
   outbound.delivery = sendResult.ok ? "sent" : "not_sent";
   outbound.metadata = { ...outbound.metadata, sendResult };
 
   if (existingStore) {
-    upsertConversationMessage(existingStore, outbound);
+    upsertConversationMessage(existingStore, outbound, { mirror: false });
   } else {
     await withStoreLock(async () => {
       const store = readStore();
-      upsertConversationMessage(store, outbound);
+      upsertConversationMessage(store, outbound, { mirror: false });
       writeStore(store);
     });
   }
+  if (mirrorMessageToDb) await mirrorMessageToDb(outbound).catch(() => {});
 
   return { ok: sendResult.ok, message: outbound, provider: sendResult };
 }
 
-async function sendChannelMessage(channel, externalId, text) {
-  if (channel === "whatsapp") return sendWhatsAppMessage(externalId, text);
+async function sendChannelMessage(channel, externalId, text, options = {}) {
+  if (channel === "whatsapp") return sendWhatsAppMessage(externalId, text, options);
   if (channel === "instagram") return sendInstagramMessage(externalId, text);
   return { ok: false, error: "unsupported_channel" };
 }
 
-async function sendWhatsAppMessage(to, text) {
+async function sendWhatsAppMessage(to, text, options = {}) {
   const token = process.env.WHATSAPP_ACCESS_TOKEN;
   const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
   if (!token || !phoneNumberId) return { ok: false, error: "whatsapp_not_configured" };
 
-  return graphPost(`/${phoneNumberId}/messages`, token, {
+  return graphPost(`/${phoneNumberId}/messages`, token, buildWhatsAppMessagePayload(to, text, options));
+}
+
+function buildWhatsAppMessagePayload(to, text, options = {}) {
+  const type = clean(options.messageType || "text");
+  const whatsapp = options.whatsapp || {};
+  const base = {
     messaging_product: "whatsapp",
     recipient_type: "individual",
     to,
+  };
+
+  if (type === "buttons") {
+    const buttons = normalizeReplyButtons(whatsapp.buttons);
+    if (buttons.length) {
+      return {
+        ...base,
+        type: "interactive",
+        interactive: {
+          type: "button",
+          ...(whatsapp.header ? { header: { type: "text", text: clean(whatsapp.header).slice(0, 60) } } : {}),
+          body: { text: clean(whatsapp.body || text).slice(0, 1024) },
+          ...(whatsapp.footer ? { footer: { text: clean(whatsapp.footer).slice(0, 60) } } : {}),
+          action: { buttons },
+        },
+      };
+    }
+  }
+
+  if (type === "list") {
+    const sections = normalizeListSections(whatsapp.sections);
+    if (sections.length) {
+      return {
+        ...base,
+        type: "interactive",
+        interactive: {
+          type: "list",
+          ...(whatsapp.header ? { header: { type: "text", text: clean(whatsapp.header).slice(0, 60) } } : {}),
+          body: { text: clean(whatsapp.body || text).slice(0, 1024) },
+          ...(whatsapp.footer ? { footer: { text: clean(whatsapp.footer).slice(0, 60) } } : {}),
+          action: {
+            button: clean(whatsapp.buttonText || "Ver opcoes").slice(0, 20),
+            sections,
+          },
+        },
+      };
+    }
+  }
+
+  if (type === "template") {
+    const name = clean(whatsapp.templateName || whatsapp.name);
+    if (name) {
+      const components = Array.isArray(whatsapp.components) ? whatsapp.components : buildTemplateComponents(whatsapp);
+      return {
+        ...base,
+        type: "template",
+        template: {
+          name,
+          language: { code: clean(whatsapp.languageCode || "pt_BR") },
+          ...(components.length ? { components } : {}),
+        },
+      };
+    }
+  }
+
+  return {
+    ...base,
     type: "text",
     text: { preview_url: false, body: text },
-  });
+  };
+}
+
+function previewOutboundText(input, options = {}) {
+  const text = clean(input.text || options.whatsapp?.body || "");
+  const type = clean(options.messageType || "text");
+  if (type === "buttons") {
+    const labels = normalizeReplyButtons(options.whatsapp?.buttons).map((button) => button.reply.title);
+    return `${text}\n[Botões: ${labels.join(" / ")}]`.trim();
+  }
+  if (type === "list") {
+    return `${text}\n[Lista: ${clean(options.whatsapp?.buttonText || "Ver opcoes")}]`.trim();
+  }
+  if (type === "template") {
+    const name = clean(options.whatsapp?.templateName || options.whatsapp?.name);
+    return name ? `[Modelo WhatsApp: ${name}]` : text;
+  }
+  return text;
+}
+
+function normalizeReplyButtons(buttons = []) {
+  const input = Array.isArray(buttons) ? buttons : String(buttons || "").split("|");
+  return input
+    .map((button, index) => {
+      const title = clean(typeof button === "string" ? button : button.title).slice(0, 20);
+      const id = clean(typeof button === "string" ? "" : button.id) || `btn_${index + 1}`;
+      return title ? { type: "reply", reply: { id: id.slice(0, 256), title } } : null;
+    })
+    .filter(Boolean)
+    .slice(0, 3);
+}
+
+function normalizeListSections(sections = []) {
+  const input = Array.isArray(sections) ? sections : [];
+  return input
+    .map((section, sectionIndex) => {
+      const rows = (Array.isArray(section.rows) ? section.rows : [])
+        .map((row, rowIndex) => {
+          const title = clean(row.title).slice(0, 24);
+          if (!title) return null;
+          return {
+            id: clean(row.id || `row_${sectionIndex + 1}_${rowIndex + 1}`).slice(0, 200),
+            title,
+            ...(row.description ? { description: clean(row.description).slice(0, 72) } : {}),
+          };
+        })
+        .filter(Boolean)
+        .slice(0, 10);
+      return rows.length
+        ? {
+            title: clean(section.title || "Opcoes").slice(0, 24),
+            rows,
+          }
+        : null;
+    })
+    .filter(Boolean)
+    .slice(0, 10);
+}
+
+function buildTemplateComponents(whatsapp = {}) {
+  const params = Array.isArray(whatsapp.bodyParams) ? whatsapp.bodyParams.map(clean).filter(Boolean) : [];
+  const components = [];
+  if (params.length) {
+    components.push({ type: "body", parameters: params.map((value) => ({ type: "text", text: value })) });
+  }
+  return components;
 }
 
 async function sendInstagramMessage(recipientId, text) {
@@ -1019,7 +1146,7 @@ async function graphPost(path, token, body) {
   return response.ok ? { ok: true, data } : { ok: false, status: response.status, data };
 }
 
-function upsertConversationMessage(store, message) {
+function upsertConversationMessage(store, message, options = {}) {
   const key = `${message.channel}:${message.externalId}`;
   const current = store.conversations[key] || {
     id: key,
@@ -1036,11 +1163,17 @@ function upsertConversationMessage(store, message) {
   current.name = message.name && !message.name.startsWith(`${message.channel} `) ? message.name : current.name;
   current.lastAt = Math.max(current.lastAt || 0, Number(message.timestamp) || Date.now());
 
-  if (!current.messages.some((item) => item.id === message.id)) {
+  const isNew = !current.messages.some((item) => item.id === message.id);
+  if (isNew) {
     current.messages.push(message);
   }
   current.messages.sort((a, b) => Number(a.timestamp || 0) - Number(b.timestamp || 0));
   store.conversations[key] = current;
+
+  // Espelhamento best-effort para o banco (nao bloqueia, nunca lanca).
+  if (isNew && options.mirror !== false && mirrorMessageToDb) {
+    mirrorMessageToDb(message).catch(() => {});
+  }
 }
 
 function getConversation(store, channel, externalId) {
@@ -1110,6 +1243,10 @@ function authorizeApiRequest(req) {
   }
 
   return { ok: false, status: 503, error: "admin_api_key_required" };
+}
+
+function isLeadWebhookRequest(url, req) {
+  return req.method === "POST" && (url.pathname === "/api/webhook" || url.pathname === "/api/leads/webhook");
 }
 
 function isUnsignedWebhookAllowed(req) {
@@ -1228,7 +1365,11 @@ function serveStatic(pathname, res) {
     return;
   }
 
-  res.writeHead(200, { "Content-Type": mimeTypes[extname(filePath)] || "application/octet-stream" });
+  res.writeHead(200, {
+    "Content-Type": mimeTypes[extname(filePath)] || "application/octet-stream",
+    // Dev: revalida sempre para evitar app.js/styles.css em cache antigo.
+    "Cache-Control": "no-cache, must-revalidate",
+  });
   createReadStream(filePath).pipe(res);
 }
 

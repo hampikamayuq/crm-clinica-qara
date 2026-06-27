@@ -5,9 +5,12 @@ MVP estatico para clinicas que precisam de CRM comercial, inbox, agenda e financ
 ## O que esta incluido
 
 - Leads com funil por etapas.
+- Score automatico de leads.
 - Inbox estilo WhatsApp com respostas rapidas.
 - Agenda com verificacao de conflito por profissional, data e horario.
+- Follow-ups categorizados por atraso, hoje, proximos e sem data.
 - Lancamentos financeiros e baixa de recebimentos.
+- Webhook universal para receber leads de formularios externos.
 - Bots automaticos importados de fluxo JSON, incluindo o fluxo `Leads novos`.
 - Agente OpenAI opcional para interpretar mensagens livres e acionar o funil.
 - Persistencia em `localStorage`.
@@ -32,7 +35,7 @@ Para publicar apenas como app estatico, envie estes arquivos para qualquer hospe
 3. Para WhatsApp Cloud API, preencha `WHATSAPP_ACCESS_TOKEN` e `WHATSAPP_PHONE_NUMBER_ID`.
 4. Para Instagram DM, preencha `INSTAGRAM_PAGE_ACCESS_TOKEN`.
 5. Para agente OpenAI, preencha `AI_PROVIDER=openai`, `OPENAI_API_KEY` e, se quiser, `OPENAI_MODEL`.
-6. Para publicar em URL publica, preencha tambem `ADMIN_API_KEY` e `META_APP_SECRET`.
+6. Para publicar em URL publica, preencha tambem `ADMIN_API_KEY`, `META_APP_SECRET` e `LEAD_WEBHOOK_SECRET`.
 7. Rode:
 
 ```bash
@@ -51,14 +54,123 @@ Endpoints criados:
 - `POST /webhooks/meta`: recebe mensagens de WhatsApp e Instagram.
 - `GET /api/integrations/status`: status da configuracao.
 - `GET /api/conversations`: conversas recebidas por webhook.
-- `POST /api/messages/send`: envio de resposta pelo canal original.
+- `POST /api/messages/send`: envio pelo canal original. WhatsApp aceita texto, botoes, lista e modelo aprovado.
 - `POST /api/agent/test`: teste do agente OpenAI pela aba Bots.
 
 As rotas `/api/*` usam `ADMIN_API_KEY` em URL publica. A UI envia essa chave pelo header `x-admin-api-key` depois que voce informa a chave no prompt do navegador. Em localhost, a chave pode ficar vazia para facilitar o desenvolvimento.
 
+Endpoints Prisma principais:
+
+- `GET/POST/PATCH /api/leads`, score automatico, `POST /api/leads/:id/score`, `POST /api/leads/score-all`, `POST /api/leads/:id/convert-to-patient`, timeline por lead.
+- `GET/POST/PATCH /api/patients`, timeline por paciente.
+- `GET /api/inbox` e `/api/conversations/*` para mensagens, tags, notas, atribuicao e resolucao.
+- `GET/POST/PATCH /api/appointments`, conflito de agenda, profissionais e disponibilidade.
+- `GET/POST/PATCH /api/services`, `/api/quick-replies`, `/api/budgets`, `/api/payments` e `/api/tasks`.
+- `POST /api/webhook` ou `POST /api/leads/webhook`: cria lead por webhook universal.
+- `GET /api/export?type=leads|budgets|payments|tasks|appointments`: exporta CSV.
+- `POST /api/import/leads`: importa leads de CSV.
+- `GET /api/followups`: follow-ups categorizados.
+- `GET /api/reports/financial-summary`, `/api/reports/conversion-summary`, `/api/reports/daily-briefing` e `/api/reports/pipeline-analysis`.
+- Apoio: `GET /api/users`, `/api/units`, `/api/appointment-types` e `/api/activities`.
+
+Exemplo de lead externo:
+
+```bash
+curl -X POST http://localhost:3000/api/webhook \
+  -H "Content-Type: application/json" \
+  -H "x-webhook-secret: $LEAD_WEBHOOK_SECRET" \
+  -d '{"nome":"Maria Silva","whatsapp":"+5521999999999","origem":"site","mensagem":"Quero marcar consulta para melasma"}'
+```
+
+Exemplo de importacao CSV:
+
+```bash
+curl -X POST http://localhost:3000/api/import/leads \
+  -H "Content-Type: text/csv" \
+  --data-binary $'Nome;Telefone;Email;Origem;Interesse\nMaria Silva;+5521999999999;maria@email.com;site;Melasma'
+```
+
+### WhatsApp: botoes, listas e modelos
+
+O Inbox usa `POST /api/messages/send` para enviar pelo WhatsApp Cloud API quando `WHATSAPP_ACCESS_TOKEN` e `WHATSAPP_PHONE_NUMBER_ID` estao configurados.
+
+Tipos suportados no corpo JSON:
+
+- `messageType: "text"`: texto simples.
+- `messageType: "buttons"`: mensagem interativa com ate 3 botoes de resposta rapida.
+- `messageType: "list"`: mensagem interativa com lista de opcoes.
+- `messageType: "template"`: modelo aprovado no WhatsApp Manager, com `templateName`, `languageCode` e parametros de corpo.
+
+Exemplo de botoes:
+
+```json
+{
+  "channel": "whatsapp",
+  "externalId": "5521999999999",
+  "text": "Como voce prefere seguir?",
+  "messageType": "buttons",
+  "whatsapp": {
+    "buttons": [
+      { "id": "agendar", "title": "Agendar" },
+      { "id": "valores", "title": "Valores" },
+      { "id": "humano", "title": "Atendente" }
+    ]
+  }
+}
+```
+
+Modelos precisam estar aprovados pela Meta antes do envio.
+
+## Banco de dados (PostgreSQL + Prisma) - v1 em andamento
+
+O CRM esta evoluindo de `localStorage`/JSON para **PostgreSQL via Prisma** como fonte da verdade. Esta fundacao e **aditiva**: o MVP atual continua funcionando enquanto o banco e adotado de forma incremental.
+
+Setup:
+
+```bash
+npm install
+cp .env.example .env        # preencha DATABASE_URL
+npm run prisma:generate     # gera o Prisma Client
+npm run db:push             # cria as tabelas no banco (ou prisma:migrate)
+npm run prisma:seed         # popula unidades, profissionais, tipos, servicos, quick replies e tags
+npm run dev                 # sobe o servidor (= npm start)
+```
+
+Scripts disponiveis:
+
+| Script | Acao |
+|---|---|
+| `npm run dev` / `npm start` | Sobe o servidor (`server.js`) |
+| `npm test` | Testes (`node --test`) |
+| `npm run check` | Checagem de sintaxe |
+| `npm run prisma:generate` | Gera o Prisma Client |
+| `npm run prisma:migrate` | Cria/aplica migracao de desenvolvimento |
+| `npm run db:push` | Sincroniza o schema com o banco (sem migracao) |
+| `npm run prisma:seed` | Roda `prisma/seed.js` |
+| `npm run db:studio` | Abre o Prisma Studio |
+
+- Schema: [`prisma/schema.prisma`](prisma/schema.prisma) (entidades CRM: User, Professional, ClinicUnit, Lead, Patient, Conversation, Message, Appointment, AppointmentType, ProfessionalAvailability, Service, Budget, Payment, Activity, Task, QuickReply, Tag, ConversationTag, AuditLog).
+- Cliente Prisma singleton: [`src/server/db.js`](src/server/db.js).
+- Seed da QARA: [`prisma/seed.js`](prisma/seed.js).
+
+> **Não é prontuário médico.** O CRM é administrativo/comercial; campos de texto livre são administrativos e devem evitar dado clínico sensível.
+
+## Documentacao tecnica
+
+Em [`docs/`](docs/):
+
+- [`database-model.md`](docs/database-model.md) - entidades mantidas no schema atual.
+- [`architecture.md`](docs/architecture.md) - camadas e referencias aplicadas.
+- [`crm-flows.md`](docs/crm-flows.md) - fluxos operacionais.
+- [`integrations.md`](docs/integrations.md) - Meta, WhatsApp, Instagram, OpenAI e futuros.
+- [`permissions.md`](docs/permissions.md) - roles e acesso.
+- [`lgpd.md`](docs/lgpd.md) - dados permitidos/evitados e cuidados minimos.
+- [`refactor-plan.md`](docs/refactor-plan.md) - plano incremental.
+- [`roadmap.md`](docs/roadmap.md) - proximas versoes.
+
 ## Proximo passo para producao
 
-Substituir `localStorage` e `data/channel-conversations.json` por banco de dados com backup e politica de retencao. O arquivo JSON atual ja usa escrita atomica, permissao restrita e fila simples de escrita para reduzir perda de mensagens no MVP.
+Substituir `localStorage` e `data/channel-conversations.json` por banco de dados com backup e politica de retencao. O arquivo JSON atual ja usa escrita atomica, permissao restrita e fila simples de escrita para reduzir perda de mensagens no MVP. A migracao dos dados locais sera feita por `scripts/migrate-json-to-db.js` (sem apagar os arquivos antigos).
 
 ## Bots
 
@@ -95,3 +207,7 @@ DEFAULT_CONSULT_VALUE=550
 ```
 
 Se uma informacao nao estiver no contexto, o agente deve pedir confirmacao da equipe em vez de inventar.
+
+## Classificador QARA (funis, prioridade, NPS)
+
+Knowledge operacional como dados em [`src/server/config/qara-knowledge.js`](src/server/config/qara-knowledge.js) + classificador determinístico (`POST /api/classify`). Funis, etapas, tags, prioridade, temperatura, NPS e regras de segurança em [docs/qara-knowledge.md](docs/qara-knowledge.md). O prompt do agente fica curto; a estrutura vive na knowledge/config. Testes: `node --test classifier.test.js`.
