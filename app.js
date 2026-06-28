@@ -59,7 +59,10 @@ let ui = {
   selectedLeadId: state.leads[0]?.id || "",
   leadSearch: "",
   inboxSearch: "",
-  inbox: { list: null, selectedId: null, messages: [], loading: false },
+  inbox: { list: null, selectedId: null, messages: [], activities: [], loading: false },
+  inboxFilters: { status: "", channel: "", assignedToId: "" },
+  users: null,
+  quickReplies: null,
   waMode: "text",
   selectedVisualBotId: "",
   funnelView: "kanban",
@@ -146,6 +149,11 @@ function handleClick(event) {
   if (action === "inbox-reply") return sendInboxReply(id);
   if (action === "inbox-receive") return receiveInbox(id);
   if (action === "inbox-resolve") return resolveInboxConversation(id);
+  if (action === "inbox-add-tag") return addInboxTag(id);
+  if (action === "inbox-add-note") return addInboxNote(id);
+  if (action === "inbox-new-task") return openInboxTaskModal(id);
+  if (action === "inbox-lead-timeline") return openLeadTimeline(id);
+  if (action === "inbox-convert-patient") return convertInboxLead(id);
   if (action === "inbox-refresh") { ui.inbox.list = null; return renderInbox(); }
   if (action === "set-wa-mode") {
     ui.waMode = actionEl.dataset.mode || "text";
@@ -204,6 +212,7 @@ function handleSubmit(event) {
   if (form.dataset.form === "appointment") createAppointment(data);
   if (form.dataset.form === "transaction") createTransaction(data);
   if (form.dataset.form === "settings") saveSettings(data);
+  if (form.dataset.form === "inbox-task") createInboxTask(data);
   if (form.dataset.form === "wa-template") saveWhatsAppTemplate(data);
   if (form.dataset.form === "visual-bot") saveVisualBot(data);
   if (form.dataset.form === "visual-step") saveVisualStep(data);
@@ -229,6 +238,12 @@ function handleChange(event) {
     ui.financeFilter = target.value;
     render();
   }
+  if (target.matches("#inbox-filter-status")) { ui.inboxFilters.status = target.value; return renderInbox(); }
+  if (target.matches("#inbox-filter-channel")) { ui.inboxFilters.channel = target.value; return renderInbox(); }
+  if (target.matches("#inbox-filter-assigned")) { ui.inboxFilters.assignedToId = target.value; return renderInbox(); }
+  if (target.matches("#inbox-assign-select")) return assignInboxConversation(target.dataset.id, target.value);
+  if (target.matches("#inbox-status-select")) return setInboxStatus(target.dataset.id, target.value);
+  if (target.matches("#inbox-quick-reply")) { insertQuickReply(target.value); target.value = ""; return; }
   if (target.matches("#triage-pipeline")) { ui.triageFilter.pipeline = target.value; render(); }
   if (target.matches("#triage-prioridade")) { ui.triageFilter.prioridade = target.value; render(); }
   if (target.matches("#triage-temperatura")) { ui.triageFilter.temperatura = target.value; render(); }
@@ -762,6 +777,7 @@ function renderInbox() {
       <section class="inbox-list" aria-label="Conversas">
         <div class="list-search">
           <input id="inbox-search" class="search-input" type="search" value="${escapeHtml(ui.inboxSearch)}" placeholder="Buscar conversa" />
+          ${renderInboxFilters()}
         </div>
         <div class="conversation-list">
           ${list.map((c) => renderDbConversationItem(c, selected)).join("") || emptyState("Nenhuma conversa no banco. Mensagens do webhook aparecem aqui.")}
@@ -787,26 +803,66 @@ function inboxConvName(c) {
 
 function filteredDbInbox() {
   const q = (ui.inboxSearch || "").trim().toLowerCase();
-  const list = ui.inbox.list || [];
-  if (!q) return list;
-  return list.filter((c) => `${inboxConvName(c)} ${c.externalId || ""} ${c.classification?.crm?.pipeline_funil || ""}`.toLowerCase().includes(q));
+  const f = ui.inboxFilters;
+  let list = ui.inbox.list || [];
+  if (f.status) list = list.filter((c) => c.status === f.status);
+  if (f.channel) list = list.filter((c) => c.channel === f.channel);
+  if (f.assignedToId) list = list.filter((c) => (c.assignedToId || c.assignedTo?.id) === f.assignedToId);
+  if (q) list = list.filter((c) => `${inboxConvName(c)} ${c.externalId || ""} ${c.classification?.crm?.pipeline_funil || ""}`.toLowerCase().includes(q));
+  return list;
+}
+
+function renderInboxFilters() {
+  const users = ui.users || [];
+  const f = ui.inboxFilters;
+  const opt = (v, label, cur) => `<option value="${v}" ${cur === v ? "selected" : ""}>${escapeHtml(label)}</option>`;
+  return `
+    <div class="inbox-filters">
+      <select id="inbox-filter-status">
+        ${opt("", "Status: todos", f.status)}
+        ${["OPEN", "WAITING_PATIENT", "WAITING_TEAM", "RESOLVED"].map((s) => opt(s, conversationStatusLabel(s), f.status)).join("")}
+      </select>
+      <select id="inbox-filter-channel">
+        ${opt("", "Canal: todos", f.channel)}
+        ${["whatsapp", "instagram"].map((c) => opt(c, channelLabel(c) || c, f.channel)).join("")}
+      </select>
+      <select id="inbox-filter-assigned">
+        ${opt("", "Responsável: todos", f.assignedToId)}
+        ${users.map((u) => opt(u.id, u.name, f.assignedToId)).join("")}
+      </select>
+    </div>`;
 }
 
 async function loadInboxData() {
   ui.inbox.loading = true;
   try {
-    const response = await apiFetch("/api/inbox", {}, false);
+    const [response] = await Promise.all([apiFetch("/api/inbox", {}, false), ensureInboxRefs()]);
     if (!response.ok) { ui.inbox.list = []; return; }
     const payload = await response.json();
     ui.inbox.list = payload.data || [];
     if (!ui.inbox.selectedId && ui.inbox.list[0]) ui.inbox.selectedId = ui.inbox.list[0].id;
-    if (ui.inbox.selectedId) await loadInboxMessages(ui.inbox.selectedId);
+    if (ui.inbox.selectedId) await Promise.all([loadInboxMessages(ui.inbox.selectedId), loadInboxActivities(ui.inbox.selectedId)]);
   } catch {
     ui.inbox.list = [];
   } finally {
     ui.inbox.loading = false;
     if (ui.view === "inbox") renderInbox();
   }
+}
+
+// Carrega usuarios e respostas rapidas uma vez (selects de atribuir/filtro/quick reply).
+// Marca [] antes do fetch para evitar reentrada; preenche so em caso de sucesso.
+async function ensureInboxRefs() {
+  const jobs = [];
+  if (ui.users === null) {
+    ui.users = [];
+    jobs.push(apiFetch("/api/users", {}, false).then(async (r) => { if (r.ok) ui.users = (await r.json()).data || []; }).catch(() => {}));
+  }
+  if (ui.quickReplies === null) {
+    ui.quickReplies = [];
+    jobs.push(apiFetch("/api/quick-replies?active=true", {}, false).then(async (r) => { if (r.ok) ui.quickReplies = (await r.json()).data || []; }).catch(() => {}));
+  }
+  await Promise.all(jobs);
 }
 
 async function loadInboxMessages(id) {
@@ -818,10 +874,28 @@ async function loadInboxMessages(id) {
   }
 }
 
+// source "conversation": atividades da conversa; "lead": timeline do lead.
+async function loadInboxActivities(id, source = "conversation") {
+  const path = source === "lead" ? `/api/leads/${id}/timeline` : `/api/activities?conversationId=${id}`;
+  try {
+    const response = await apiFetch(path, {}, false);
+    ui.inbox.activities = response.ok ? (await response.json()).data || [] : [];
+  } catch {
+    ui.inbox.activities = [];
+  }
+}
+
 async function selectInboxConversation(id) {
   ui.inbox.selectedId = id;
-  await loadInboxMessages(id);
+  await Promise.all([loadInboxMessages(id), loadInboxActivities(id)]);
   renderInbox();
+}
+
+// Recarrega a lista do banco preservando a conversa selecionada (apos uma escrita).
+async function reloadInboxKeepingSelection(id) {
+  if (id) ui.inbox.selectedId = id;
+  ui.inbox.list = null;
+  await loadInboxData();
 }
 
 function renderDbConversationItem(c, selected) {
@@ -869,6 +943,16 @@ function renderDbChat(c) {
           <span aria-hidden="true">↙</span> Receber
         </button>
       </div>
+      ${
+        (ui.quickReplies || []).length
+          ? `<div class="composer-line">
+              <select id="inbox-quick-reply" class="quick-reply-select">
+                <option value="">Resposta rápida…</option>
+                ${(ui.quickReplies || []).map((q) => `<option value="${escapeHtml(q.id)}">${escapeHtml(q.title || q.shortcut)}</option>`).join("")}
+              </select>
+            </div>`
+          : ""
+      }
       <div class="composer-line">
         <textarea id="inbox-reply-input" placeholder="${escapeHtml(replyPlaceholderForMode())}"></textarea>
         <button class="primary-button" type="button" data-action="inbox-reply" data-id="${c.id}">
@@ -935,10 +1019,32 @@ function replyPlaceholderForMode() {
 
 function renderDbConversationSide(c) {
   const k = c.classification?.crm;
+  const users = ui.users || [];
+  const tags = (c.tags || []).map((t) => t.tag?.name).filter(Boolean);
+  const assignedId = c.assignedToId || c.assignedTo?.id || "";
   return `
     <div class="lead-summary">
       <h3>${escapeHtml(inboxConvName(c))}</h3>
       <p class="muted">${escapeHtml(c.externalId || "")}</p>
+
+      <div class="side-block">
+        <div class="side-label">Responsável</div>
+        <select id="inbox-assign-select" data-id="${c.id}" class="side-select">
+          <option value="">— Sem responsável —</option>
+          ${users.map((u) => `<option value="${u.id}" ${assignedId === u.id ? "selected" : ""}>${escapeHtml(u.name)}</option>`).join("")}
+        </select>
+        <div class="side-label">Status</div>
+        <select id="inbox-status-select" data-id="${c.id}" class="side-select">
+          ${["OPEN", "WAITING_PATIENT", "WAITING_TEAM", "RESOLVED"].map((s) => `<option value="${s}" ${c.status === s ? "selected" : ""}>${escapeHtml(conversationStatusLabel(s))}</option>`).join("")}
+        </select>
+        <div class="side-label">Tags</div>
+        <div class="tag-chips">${tags.map((t) => `<span class="chip">${escapeHtml(t)}</span>`).join("") || '<span class="muted">Sem tags</span>'}</div>
+        <div class="tag-add">
+          <input id="inbox-tag-input" placeholder="Nova tag" />
+          <button class="secondary-button" type="button" data-action="inbox-add-tag" data-id="${c.id}">+</button>
+        </div>
+      </div>
+
       ${
         k
           ? `<div class="side-block">
@@ -946,14 +1052,47 @@ function renderDbConversationSide(c) {
               <div class="side-label">Prioridade</div><div><span class="chip ${PRIORITY_TONE[k.prioridade] || "primary"}">${escapeHtml(k.prioridade || "-")}</span> <span class="chip ${TEMP_TONE[k.temperatura] || "amber"}">${escapeHtml(k.temperatura || "-")}</span></div>
               <div class="side-label">Médico sugerido</div><div>${escapeHtml(k.medico_indicado || "-")}</div>
               <div class="side-label">Próxima ação</div><div>${escapeHtml(k.proxima_acao || "-")}</div>
-              <div class="side-label">Tags</div><div class="muted">${(k.tags || []).map((t) => escapeHtml(t)).join(", ")}</div>
             </div>`
           : '<p class="muted">Sem classificação ainda.</p>'
       }
+
+      ${
+        c.lead
+          ? `<div class="side-block">
+              <div class="side-label">Lead</div>
+              <div>${escapeHtml(c.lead.name || "-")}${c.lead.phone ? ` · ${escapeHtml(c.lead.phone)}` : ""}</div>
+              <div class="muted">Estágio: ${escapeHtml(c.lead.stage || "-")}</div>
+              <div class="button-row" style="margin-top:8px">
+                <button class="ghost-button" type="button" data-action="inbox-lead-timeline" data-id="${c.lead.id}">Timeline</button>
+                <button class="ghost-button" type="button" data-action="inbox-convert-patient" data-id="${c.lead.id}">Converter em paciente</button>
+              </div>
+            </div>`
+          : ""
+      }
+
+      <div class="side-block">
+        <div class="side-label">Notas & atividades</div>
+        <div class="activity-list">${(ui.inbox.activities || []).map(renderActivityItem).join("") || '<p class="muted">Sem atividades.</p>'}</div>
+        <div class="note-add">
+          <textarea id="inbox-note-input" placeholder="Nota interna"></textarea>
+          <button class="secondary-button" type="button" data-action="inbox-add-note" data-id="${c.id}">Adicionar nota</button>
+        </div>
+      </div>
+
       <div class="button-row" style="margin-top:14px">
+        <button class="secondary-button" type="button" data-action="inbox-new-task" data-id="${c.id}">Criar tarefa</button>
         <button class="secondary-button" type="button" data-action="inbox-resolve" data-id="${c.id}">Resolver</button>
       </div>
     </div>`;
+}
+
+function renderActivityItem(a) {
+  const time = a.createdAt ? new Date(a.createdAt).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "";
+  const title = a.title || a.type || "Atividade";
+  return `<div class="activity-item">
+    <div class="activity-head"><span class="activity-type">${escapeHtml(title)}</span><time>${escapeHtml(time)}</time></div>
+    ${a.description ? `<div class="activity-desc">${escapeHtml(a.description)}</div>` : ""}
+  </div>`;
 }
 
 function conversationStatusLabel(s) {
@@ -1106,6 +1245,112 @@ async function resolveInboxConversation(id) {
   } catch {
     toast("Falha ao resolver.");
   }
+}
+
+async function assignInboxConversation(id, assignedToId) {
+  const result = await dbWrite(`/api/conversations/${id}/assign`, "POST", { assignedToId: assignedToId || null });
+  if (result === null) return toast("Falha ao atribuir responsável.");
+  await reloadInboxKeepingSelection(id);
+  toast("Responsável atualizado.");
+}
+
+async function setInboxStatus(id, status) {
+  const result = await dbWrite(`/api/conversations/${id}`, "PATCH", { status });
+  if (result === null) return toast("Falha ao mudar status.");
+  await reloadInboxKeepingSelection(id);
+  toast("Status atualizado.");
+}
+
+async function addInboxTag(id) {
+  const input = document.querySelector("#inbox-tag-input");
+  const name = clean(input?.value || "");
+  if (!name) return toast("Digite uma tag.");
+  const result = await dbWrite(`/api/conversations/${id}/tags`, "POST", { name });
+  if (result === null) return toast("Falha ao adicionar tag.");
+  await reloadInboxKeepingSelection(id);
+  toast("Tag adicionada.");
+}
+
+async function addInboxNote(id) {
+  const input = document.querySelector("#inbox-note-input");
+  const text = clean(input?.value || "");
+  if (!text) return toast("Digite a nota.");
+  const result = await dbWrite(`/api/conversations/${id}/notes`, "POST", { text });
+  if (result === null) return toast("Falha ao salvar nota.");
+  await loadInboxActivities(id);
+  renderInbox();
+  toast("Nota adicionada.");
+}
+
+async function openLeadTimeline(leadId) {
+  await loadInboxActivities(leadId, "lead");
+  renderInbox();
+}
+
+async function convertInboxLead(leadId) {
+  if (!window.confirm("Converter este lead em paciente?")) return;
+  const result = await dbWrite(`/api/leads/${leadId}/convert-to-patient`, "POST", {});
+  if (result === null) return toast("Falha ao converter.");
+  await reloadInboxKeepingSelection(ui.inbox.selectedId);
+  toast("Lead convertido em paciente.");
+}
+
+function insertQuickReply(id) {
+  const qr = (ui.quickReplies || []).find((q) => q.id === id);
+  const input = document.querySelector("#inbox-reply-input");
+  if (!qr || !input) return;
+  input.value = input.value ? `${input.value}\n${qr.content}` : qr.content;
+  input.focus();
+}
+
+function openInboxTaskModal(conversationId) {
+  const conversation = (ui.inbox.list || []).find((x) => x.id === conversationId);
+  const users = ui.users || [];
+  openModal(`
+    <div class="modal-header">
+      <h2>Nova tarefa</h2>
+      <button class="icon-button" type="button" data-action="close-modal" aria-label="Fechar">×</button>
+    </div>
+    <form data-form="inbox-task" class="form-grid">
+      <input type="hidden" name="leadId" value="${escapeHtml(conversation?.lead?.id || "")}" />
+      <input type="hidden" name="patientId" value="${escapeHtml(conversation?.patient?.id || "")}" />
+      <div class="field full">
+        <label for="task-title">Título</label>
+        <input id="task-title" name="title" required placeholder="Ligar para o paciente" />
+      </div>
+      <div class="field">
+        <label for="task-due">Vencimento</label>
+        <input id="task-due" name="dueAt" type="date" value="${todayISO()}" />
+      </div>
+      <div class="field">
+        <label for="task-assignee">Responsável</label>
+        <select id="task-assignee" name="assignedToId">
+          <option value="">—</option>
+          ${users.map((u) => `<option value="${u.id}">${escapeHtml(u.name)}</option>`).join("")}
+        </select>
+      </div>
+      <div class="modal-actions full">
+        <button class="secondary-button" type="button" data-action="close-modal">Cancelar</button>
+        <button class="primary-button" type="submit">Criar tarefa</button>
+      </div>
+    </form>
+  `);
+}
+
+async function createInboxTask(data) {
+  const title = clean(data.title || "");
+  if (!title) return toast("Informe o título da tarefa.");
+  const body = {
+    title,
+    dueAt: data.dueAt || null,
+    assignedToId: data.assignedToId || null,
+    leadId: data.leadId || null,
+    patientId: data.patientId || null,
+  };
+  const result = await dbWrite("/api/tasks", "POST", body);
+  closeModal();
+  if (result === null) return toast("Falha ao criar tarefa.");
+  toast("Tarefa criada.");
 }
 
 function renderLeads() {

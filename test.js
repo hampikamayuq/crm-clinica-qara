@@ -81,6 +81,37 @@ test("roteador modular expoe os endpoints CRM centrais", () => {
   }
 });
 
+test("inbox completo: app.js liga as acoes e endpoints do painel", () => {
+  const app = readFileSync(new URL("./app.js", import.meta.url), "utf8");
+  // acoes registradas no handleClick/handleChange/handleSubmit
+  for (const action of [
+    "inbox-add-tag",
+    "inbox-add-note",
+    "inbox-new-task",
+    "inbox-lead-timeline",
+    "inbox-convert-patient",
+    "inbox-assign-select",
+    "inbox-status-select",
+    "inbox-quick-reply",
+    "inbox-task",
+  ]) {
+    assert.ok(app.includes(action), `app.js deveria tratar a acao ${action}`);
+  }
+  // endpoints consumidos pelo painel
+  for (const endpoint of [
+    "/assign",
+    "/tags",
+    "/notes",
+    "/api/quick-replies?active=true",
+    "/api/tasks",
+    "/timeline",
+    "/convert-to-patient",
+    "/api/users",
+  ]) {
+    assert.ok(app.includes(endpoint), `app.js deveria chamar ${endpoint}`);
+  }
+});
+
 test("score automatico classifica lead quente quando ha alta intencao", () => {
   const score = calculateLeadScore({
     phone: "+5521999999999",
