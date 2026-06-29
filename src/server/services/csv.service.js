@@ -146,7 +146,7 @@ function exportPayments() {
 
 function exportTasks() {
   return prisma.task
-    .findMany({ include: { lead: true, patient: true, assignedTo: true }, orderBy: [{ dueAt: "asc" }, { createdAt: "desc" }], take: 5000 })
+    .findMany({ include: { lead: true, patient: true, assignedTo: { select: { id: true, name: true } } }, orderBy: [{ dueAt: "asc" }, { createdAt: "desc" }], take: 5000 })
     .then((rows) => ({
       filename: "tarefas.csv",
       csv: buildCsv(rows, [

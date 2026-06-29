@@ -70,6 +70,7 @@ export async function createLead(input, userId = null) {
   if (!data.temperature) data.temperature = scored.temperature;
 
   const lead = await prisma.lead.create({ data: { ...data, name: input.name } });
+  await ensureLeadInboxConversation(lead);
   await createActivity({
     type: "LEAD_CREATED",
     title: "Lead criado",
@@ -134,4 +135,33 @@ export async function convertToPatient(id, userId = null) {
 
 export function leadTimeline(id) {
   return getTimelineForLead(id);
+}
+
+async function ensureLeadInboxConversation(lead) {
+  const externalId = whatsappExternalId(lead.phone);
+  if (!externalId) return null;
+
+  const existing = await prisma.conversation.findUnique({
+    where: { channel_externalId: { channel: "whatsapp", externalId } },
+    select: { id: true, leadId: true },
+  });
+  if (existing) {
+    if (existing.leadId) return existing;
+    return prisma.conversation.update({ where: { id: existing.id }, data: { leadId: lead.id, lastMessageAt: new Date() } });
+  }
+
+  return prisma.conversation.create({
+    data: {
+      channel: "whatsapp",
+      externalId,
+      leadId: lead.id,
+      status: "OPEN",
+      lastMessageAt: new Date(),
+    },
+  });
+}
+
+function whatsappExternalId(phone) {
+  const digits = String(phone || "").replace(/\D/g, "");
+  return digits.length >= 8 ? digits : "";
 }

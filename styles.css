@@ -46,6 +46,11 @@ body {
   font-family: var(--sans);
 }
 
+body.auth-locked .demo-strip,
+body.auth-locked .app-shell {
+  display: none;
+}
+
 button,
 input,
 select,
@@ -55,6 +60,66 @@ textarea {
 
 button {
   cursor: pointer;
+}
+
+.login-root {
+  display: none;
+}
+
+body.auth-locked .login-root {
+  align-items: center;
+  background: var(--bg);
+  display: grid;
+  min-height: 100vh;
+  padding: 24px;
+}
+
+.login-panel {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  display: grid;
+  gap: 18px;
+  margin: 0 auto;
+  max-width: 420px;
+  padding: 24px;
+  width: 100%;
+}
+
+.login-panel h1 {
+  font-family: var(--display);
+  font-size: 1.55rem;
+  letter-spacing: 0;
+  margin: 0;
+}
+
+.login-panel p {
+  color: var(--muted);
+  line-height: 1.45;
+  margin: 0;
+}
+
+.login-form {
+  display: grid;
+  gap: 12px;
+}
+
+.login-field {
+  display: grid;
+  gap: 6px;
+}
+
+.login-field span {
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 850;
+}
+
+.login-error {
+  color: var(--red);
+  font-size: 0.84rem;
+  min-height: 1.2em;
 }
 
 .demo-strip {

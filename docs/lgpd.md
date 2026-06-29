@@ -17,7 +17,7 @@ O CRM QARA e administrativo/comercial. Nao e prontuario medico.
 
 ## Controles
 
-- `ADMIN_API_KEY` em ambiente publico; roles reais entram no login multiusuario.
+- Login multiusuario por usuario/senha, com senha armazenada apenas como hash.
 - `AuditLog` para alteracoes criticas, usando metadados quando mensagens estiverem envolvidas.
 - Segredos em variaveis de ambiente, TLS no deploy e backups do PostgreSQL.
 - Politica de retencao para leads perdidos, conversas antigas e exports.

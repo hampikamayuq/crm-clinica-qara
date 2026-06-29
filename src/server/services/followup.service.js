@@ -4,7 +4,7 @@ export async function categorizedFollowups(filters = {}) {
   const limit = Math.min(Number(filters.limit) || 500, 1000);
   const tasks = await prisma.task.findMany({
     where: { status: { in: ["OPEN", "IN_PROGRESS"] } },
-    include: { lead: true, patient: true, assignedTo: true },
+    include: { lead: true, patient: true, assignedTo: { select: { id: true, name: true } } },
     orderBy: [{ dueAt: "asc" }, { createdAt: "desc" }],
     take: limit,
   });

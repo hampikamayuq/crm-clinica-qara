@@ -13,6 +13,13 @@ let handleModularApi = null;
 let mirrorMessageToDb = null;
 let getInboxLegacyShape = null;
 let classifyInboundToDb = null;
+let loginWithPassword = null;
+let authorizeRequest = null;
+try {
+  ({ loginWithPassword, authorizeRequest } = await import("./src/server/services/auth.service.js"));
+} catch (error) {
+  console.warn("Auth de usuarios indisponivel:", error.message);
+}
 try {
   ({ handleModularApi, mirrorMessageToDb, getInboxLegacyShape, classifyInboundToDb } = await import("./src/server/index.js"));
 } catch (error) {
@@ -380,6 +387,10 @@ const server = createServer(async (req, res) => {
       return receiveWebhook(req, res);
     }
 
+    if (url.pathname === "/api/auth/login" && req.method === "POST") {
+      return login(req, res);
+    }
+
     if (url.pathname.startsWith("/api/") && url.pathname !== "/api/health" && !isLeadWebhookRequest(url, req)) {
       const auth = authorizeApiRequest(req);
       if (!auth.ok) return json(res, auth.status, { ok: false, error: auth.error });
@@ -439,6 +450,19 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
 }
 
 export { guardAgentReply, resolveDoctorValue, parseAgentJson, buildWhatsAppMessagePayload, previewOutboundText };
+
+async function login(req, res) {
+  if (!loginWithPassword) return json(res, 503, { ok: false, error: "login_unavailable" });
+  try {
+    const body = await readJson(req);
+    const result = await loginWithPassword(body.username, String(body.password || ""), {
+      allowDevBootstrap: process.env.ALLOW_DEV_BOOTSTRAP === "true" && isLocalRequest(req),
+    });
+    return json(res, 200, { ok: true, ...result });
+  } catch (error) {
+    return json(res, error.status || 401, { ok: false, error: error.code || "invalid_credentials" });
+  }
+}
 
 function verifyWebhook(url, res) {
   const mode = url.searchParams.get("hub.mode");
@@ -1206,9 +1230,10 @@ function integrationStatus(req) {
       instagram: Boolean(process.env.INSTAGRAM_PAGE_ACCESS_TOKEN),
       openai: Boolean(process.env.OPENAI_API_KEY),
       adminApi: Boolean(adminApiKey),
+      userLogin: Boolean(loginWithPassword),
     },
     security: {
-      apiAuth: adminApiKey ? "enabled" : isLocalRequest(req) && !isProduction ? "local_dev_only" : "blocked_without_admin_key",
+      apiAuth: loginWithPassword ? "session_login" : adminApiKey ? "admin_key" : "unavailable",
       webhookSignature: process.env.META_APP_SECRET
         ? "enabled"
         : isUnsignedWebhookAllowed(req)
@@ -1228,21 +1253,9 @@ function integrationStatus(req) {
 }
 
 function authorizeApiRequest(req) {
-  if (adminApiKey) {
-    const headerKey = clean(req.headers["x-admin-api-key"]);
-    const auth = clean(req.headers.authorization);
-    const bearerKey = auth.toLowerCase().startsWith("bearer ") ? auth.slice(7).trim() : "";
-    if (safeStringEqual(headerKey, adminApiKey) || safeStringEqual(bearerKey, adminApiKey)) {
-      return { ok: true };
-    }
-    return { ok: false, status: 401, error: "admin_api_key_invalid" };
-  }
-
-  if (process.env.ALLOW_UNAUTHENTICATED_API === "true" || (!isProduction && isLocalRequest(req))) {
-    return { ok: true };
-  }
-
-  return { ok: false, status: 503, error: "admin_api_key_required" };
+  if (authorizeRequest) return authorizeRequest(req);
+  if (process.env.ALLOW_UNAUTHENTICATED_API === "true") return { ok: true };
+  return { ok: false, status: 503, error: "auth_unavailable" };
 }
 
 function isLeadWebhookRequest(url, req) {

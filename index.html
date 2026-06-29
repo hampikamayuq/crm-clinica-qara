@@ -24,7 +24,9 @@
     />
     <link rel="stylesheet" href="./styles.css" />
   </head>
-  <body>
+  <body class="auth-locked">
+    <div id="login-root" class="login-root"></div>
+
     <div class="demo-strip">
       <span aria-hidden="true">●</span>
       Ambiente demonstrativo com dados ficticios
@@ -121,6 +123,7 @@
               <span aria-hidden="true">＋</span>
               Lead
             </button>
+            <button class="ghost-button" type="button" data-action="logout">Sair</button>
           </div>
         </header>
 

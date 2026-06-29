@@ -1,5 +1,6 @@
 const STORAGE_KEY = "cliniqara-crm-v4";
-const ADMIN_KEY_STORAGE = "cliniqara-admin-api-key";
+const AUTH_TOKEN_STORAGE = "cliniqara-auth-token-v1";
+const AUTH_USER_STORAGE = "cliniqara-auth-user-v1";
 
 const stages = [
   { id: "entrada", label: "Entrada", tone: "blue" },
@@ -94,15 +95,14 @@ let ui = {
   integrationError: "",
   agentTest: { name: "", draft: "", messages: [], agentState: {}, lastActions: [], confidence: null, busy: false },
 };
+let appStarted = false;
 
 if (!pageTitles[ui.view]) ui.view = "dashboard";
 
 document.addEventListener("DOMContentLoaded", () => {
   bindEvents();
-  render();
-  hydrateLeadsFromDb();
-  hydrateProfessionalsFromDb().then(hydrateAppointmentsFromDb);
-  hydrateBotsFromDb();
+  if (sessionStorage.getItem(AUTH_TOKEN_STORAGE)) resumeSession();
+  else renderLogin();
 });
 
 function bindEvents() {
@@ -124,6 +124,101 @@ function bindEvents() {
   });
 }
 
+function startApp() {
+  document.body.classList.remove("auth-locked");
+  const root = document.querySelector("#login-root");
+  if (root) root.innerHTML = "";
+  if (appStarted) return render();
+  appStarted = true;
+  render();
+  hydrateLeadsFromDb();
+  hydrateProfessionalsFromDb().then(hydrateAppointmentsFromDb);
+  hydrateBotsFromDb();
+}
+
+async function resumeSession() {
+  try {
+    const response = await apiFetch("/api/integrations/status", {}, false);
+    if (response.ok) return startApp();
+  } catch {
+    /* volta para login */
+  }
+  sessionStorage.removeItem(AUTH_TOKEN_STORAGE);
+  sessionStorage.removeItem(AUTH_USER_STORAGE);
+  renderLogin("Sessao expirada. Entre novamente.");
+}
+
+function renderLogin(message = "") {
+  appStarted = false;
+  document.body.classList.add("auth-locked");
+  const root = document.querySelector("#login-root");
+  if (!root) return;
+  root.innerHTML = `
+    <section class="login-panel" aria-label="Entrar no CliniQara">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">Q</div>
+        <div>
+          <div class="brand-name">CliniQara</div>
+          <div class="brand-subtitle">CRM sem prontuario</div>
+        </div>
+      </div>
+      <div>
+        <h1>Entrar no sistema</h1>
+        <p>Use o usuario e senha da clinica.</p>
+      </div>
+      <form class="login-form" data-form="login">
+        <label class="login-field">
+          <span>Usuario</span>
+          <input class="search-input" name="username" type="text" autocomplete="username" required autofocus />
+        </label>
+        <label class="login-field">
+          <span>Senha</span>
+          <input class="search-input" name="password" type="password" autocomplete="current-password" required />
+        </label>
+        <div class="login-error" role="alert">${escapeHtml(message)}</div>
+        <button class="primary-button" type="submit">Entrar</button>
+      </form>
+    </section>
+  `;
+  requestAnimationFrame(() => root.querySelector("input")?.focus());
+}
+
+async function loginWithPassword(form, data) {
+  const button = form.querySelector("button[type='submit']");
+  const error = form.querySelector(".login-error");
+  if (button) button.disabled = true;
+  if (error) error.textContent = "";
+  try {
+    const response = await fetch("/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: data.username, password: data.password }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || !payload.token) throw new Error(authErrorMessage(payload.error));
+    sessionStorage.setItem(AUTH_TOKEN_STORAGE, payload.token);
+    sessionStorage.setItem(AUTH_USER_STORAGE, JSON.stringify(payload.user || {}));
+    startApp();
+  } catch (err) {
+    if (error) error.textContent = err.message || "Nao foi possivel entrar.";
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+function logout() {
+  sessionStorage.removeItem(AUTH_TOKEN_STORAGE);
+  sessionStorage.removeItem(AUTH_USER_STORAGE);
+  renderLogin();
+}
+
+function authErrorMessage(code) {
+  if (code === "invalid_credentials") return "Usuario ou senha invalidos.";
+  if (code === "user_inactive") return "Usuario inativo.";
+  if (code === "login_unavailable") return "Login indisponivel. Verifique o banco de dados.";
+  return "Nao foi possivel entrar.";
+}
+
 function handleClick(event) {
   const viewButton = event.target.closest("[data-view]");
   if (viewButton) {
@@ -141,6 +236,7 @@ function handleClick(event) {
   const id = actionEl.dataset.id;
 
   if (action === "toggle-menu") return toggleMenu();
+  if (action === "logout") return logout();
   if (action === "new-lead") return openLeadModal();
   if (action === "close-modal") return closeModal();
   if (action === "export-data") return exportData();
@@ -232,6 +328,7 @@ function handleSubmit(event) {
   event.preventDefault();
   const data = Object.fromEntries(new FormData(form).entries());
 
+  if (form.dataset.form === "login") return loginWithPassword(form, data);
   if (form.dataset.form === "lead") createLead(data);
   if (form.dataset.form === "appointment") createAppointment(data);
   if (form.dataset.form === "transaction") createTransaction(data);
@@ -2155,7 +2252,7 @@ function renderChannels() {
         </div>
         <div class="setup-list">
           ${renderSetupItem("Rodar servidor", status?.ok, "npm start")}
-          ${renderSetupItem("Proteger API interna", configured.adminApi || status?.security?.apiAuth === "local_dev_only", "ADMIN_API_KEY")}
+          ${renderSetupItem("Login multiusuario", configured.userLogin || status?.security?.apiAuth === "session_login", "User + senha")}
           ${renderSetupItem("Configurar META_VERIFY_TOKEN", configured.verifyToken, ".env")}
           ${renderSetupItem("Validar assinatura do webhook", configured.appSecret, "META_APP_SECRET")}
           ${renderSetupItem("Configurar WhatsApp", configured.whatsapp, "WHATSAPP_ACCESS_TOKEN + WHATSAPP_PHONE_NUMBER_ID")}
@@ -3559,7 +3656,11 @@ function createLead(data) {
   addActivity(`Novo lead: ${newLead.name}.`, "blue");
   closeModal();
   saveAndRender("Lead criado.");
-  pushLeadToDb(newLead);
+  pushLeadToDb(newLead).then((created) => {
+    if (!created) return;
+    ui.inbox.list = null;
+    if (ui.view === "inbox") renderInbox();
+  });
 }
 
 function createAppointment(data) {
@@ -3720,18 +3821,16 @@ async function receivePatientMessage() {
 
 async function apiFetch(path, options = {}, retry = true) {
   const headers = new Headers(options.headers || {});
-  const key = sessionStorage.getItem(ADMIN_KEY_STORAGE) || "";
-  if (key && !headers.has("x-admin-api-key")) headers.set("x-admin-api-key", key);
+  const token = sessionStorage.getItem(AUTH_TOKEN_STORAGE) || "";
+  if (token && !headers.has("Authorization")) headers.set("Authorization", `Bearer ${token}`);
 
   const response = await fetch(path, { ...options, headers });
-  if (response.status !== 401 || !retry) return response;
-
-  sessionStorage.removeItem(ADMIN_KEY_STORAGE);
-  const nextKey = window.prompt("Digite a ADMIN_API_KEY configurada no servidor:");
-  if (!nextKey) return response;
-
-  sessionStorage.setItem(ADMIN_KEY_STORAGE, nextKey.trim());
-  return apiFetch(path, options, false);
+  if (response.status === 401 && !document.body.classList.contains("auth-locked")) {
+    sessionStorage.removeItem(AUTH_TOKEN_STORAGE);
+    sessionStorage.removeItem(AUTH_USER_STORAGE);
+    renderLogin("Sessao expirada. Entre novamente.");
+  }
+  return response;
 }
 
 async function dbWrite(path, method, body, target) {

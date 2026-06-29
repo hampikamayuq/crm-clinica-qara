@@ -42,7 +42,11 @@ const routes = [
   ["POST", "/api/import/leads", ({ body, userId }) => csv.importLeads(body, userId), true],
   ["GET", "/api/followups", ({ query }) => followups.categorizedFollowups(query)],
 
-  ["GET", "/api/users", () => prisma.user.findMany({ orderBy: { name: "asc" } })],
+  ["GET", "/api/users", () => prisma.user.findMany({
+    where: { active: true },
+    orderBy: { name: "asc" },
+    select: { id: true, name: true, username: true, email: true, role: true, active: true },
+  })],
   ["GET", "/api/units", () => prisma.clinicUnit.findMany({ where: { active: true }, orderBy: { name: "asc" } })],
   ["GET", "/api/appointment-types", () => prisma.appointmentType.findMany({ where: { active: true }, orderBy: { name: "asc" } })],
 
@@ -204,7 +208,7 @@ export async function handleModularApi(req, res, url) {
       }
       const body = ["POST", "PATCH", "PUT"].includes(req.method) ? await readBody(req) : {};
       const query = Object.fromEntries(url.searchParams.entries());
-      const data = await handler({ req, res, params, body, query, userId: req.headers["x-user-id"] || null });
+      const data = await handler({ req, res, params, body, query, userId: req.user?.id || req.headers["x-user-id"] || null });
       if (!res.writableEnded) sendData(res, serializeDecimals(data));
     } catch (err) {
       const status = err.statusCode || 500;

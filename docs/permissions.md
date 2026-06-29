@@ -1,6 +1,6 @@
 # Permissoes
 
-Hoje, escrita em `/api/*` usa `ADMIN_API_KEY`. O schema ja prepara `User.role`.
+Hoje, a UI exige login por usuario/senha do `User` no banco. A sessao usa token temporario em memoria; `ADMIN_API_KEY` fica apenas como acesso tecnico opcional.
 
 ## Roles
 
@@ -15,4 +15,4 @@ Hoje, escrita em `/api/*` usa `ADMIN_API_KEY`. O schema ja prepara `User.role`.
 - `requireRole([...])` existe como helper preparatorio.
 - `MARKETING` nao acessa corpo de mensagens.
 - Alteracoes criticas devem gerar `AuditLog`.
-- Localhost pode ficar aberto se `ADMIN_API_KEY` nao estiver configurada; URL publica nao.
+- Localhost pode usar bootstrap `admin` / `admin` se nenhuma senha for configurada; URL publica exige usuario no banco.

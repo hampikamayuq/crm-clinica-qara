@@ -4,7 +4,7 @@ Fonte da verdade: `prisma/schema.prisma` (PostgreSQL). Valores financeiros usam 
 
 ## Entidades
 
-- `User`: usuario do sistema, `role` (`ADMIN`, `DOCTOR`, `SECRETARY`, `FINANCE`, `MARKETING`) e vinculo opcional com `Professional`.
+- `User`: usuario do sistema, login por `username`/`email`, senha com hash, `role` (`ADMIN`, `DOCTOR`, `SECRETARY`, `FINANCE`, `MARKETING`) e vinculo opcional com `Professional`.
 - `ClinicUnit`: unidades fisicas da QARA.
 - `Professional`: medicos/profissionais usados por agenda e disponibilidade.
 - `Lead`: oportunidade comercial, etapa, temperatura, origem, interesse, responsavel, proxima acao e valor estimado.

@@ -35,7 +35,7 @@ Para publicar apenas como app estatico, envie estes arquivos para qualquer hospe
 3. Para WhatsApp Cloud API, preencha `WHATSAPP_ACCESS_TOKEN` e `WHATSAPP_PHONE_NUMBER_ID`.
 4. Para Instagram DM, preencha `INSTAGRAM_PAGE_ACCESS_TOKEN`.
 5. Para agente OpenAI, preencha `AI_PROVIDER=openai`, `OPENAI_API_KEY` e, se quiser, `OPENAI_MODEL`.
-6. Para publicar em URL publica, preencha tambem `ADMIN_API_KEY`, `META_APP_SECRET` e `LEAD_WEBHOOK_SECRET`.
+6. Para publicar em URL publica, preencha tambem `BOOTSTRAP_USERNAME`, `BOOTSTRAP_PASSWORD`, `META_APP_SECRET` e `LEAD_WEBHOOK_SECRET`.
 7. Rode:
 
 ```bash
@@ -57,7 +57,14 @@ Endpoints criados:
 - `POST /api/messages/send`: envio pelo canal original. WhatsApp aceita texto, botoes, lista e modelo aprovado.
 - `POST /api/agent/test`: teste do agente OpenAI pela aba Bots.
 
-As rotas `/api/*` usam `ADMIN_API_KEY` em URL publica. A UI envia essa chave pelo header `x-admin-api-key` depois que voce informa a chave no prompt do navegador. Em localhost, a chave pode ficar vazia para facilitar o desenvolvimento.
+Em URL publica, o usuario entra com usuario ou email e senha cadastrados no banco. `BOOTSTRAP_USERNAME` e `BOOTSTRAP_PASSWORD` criam o primeiro admin no seed. Para varios usuarios no deploy, use `APP_USERS_JSON`:
+
+```json
+[
+  { "username": "recepcao", "email": "recepcao@qara.local", "name": "Recepcao", "role": "SECRETARY", "password": "troque-esta-senha" },
+  { "username": "financeiro", "email": "financeiro@qara.local", "name": "Financeiro", "role": "FINANCE", "password": "troque-esta-senha" }
+]
+```
 
 Endpoints Prisma principais:
 
@@ -135,6 +142,8 @@ npm run db:push             # cria as tabelas no banco (ou prisma:migrate)
 npm run prisma:seed         # popula unidades, profissionais, tipos, servicos, quick replies e tags
 npm run dev                 # sobe o servidor (= npm start)
 ```
+
+Use a URL externa do Postgres no `.env` local. No servico web do Render, configure `DATABASE_URL` com a URL interna do banco `qara-crm-db`.
 
 Scripts disponiveis:
 

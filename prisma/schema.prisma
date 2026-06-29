@@ -112,13 +112,15 @@ enum TaskStatus {
 }
 
 model User {
-  id        String   @id @default(cuid())
-  name      String
-  email     String   @unique
-  role      Role     @default(SECRETARY)
-  active    Boolean  @default(true)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id           String   @id @default(cuid())
+  name         String
+  username     String?
+  email        String   @unique
+  passwordHash String?
+  role         Role     @default(SECRETARY)
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
   professional   Professional?
   assignedLeads  Lead[]         @relation("LeadAssignee")
@@ -128,6 +130,7 @@ model User {
   auditLogs      AuditLog[]
 
   @@index([role])
+  @@index([username])
   @@index([createdAt])
 }
 

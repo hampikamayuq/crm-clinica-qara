@@ -55,6 +55,9 @@ test("schema Prisma mantem o escopo CRM completo", () => {
     assert.match(schema, new RegExp(`model ${model}\\b`));
   }
   assert.match(schema, /\bscore\s+Int\s+@default\(0\)/);
+  assert.match(schema, /\busername\s+String\?/);
+  assert.match(schema, /@@index\(\[username\]\)/);
+  assert.match(schema, /\bpasswordHash\s+String\?/);
 });
 
 test("roteador modular expoe os endpoints CRM centrais", () => {
@@ -110,6 +113,29 @@ test("inbox completo: app.js liga as acoes e endpoints do painel", () => {
   ]) {
     assert.ok(app.includes(endpoint), `app.js deveria chamar ${endpoint}`);
   }
+});
+
+test("novo lead com WhatsApp entra no inbox", () => {
+  const leadService = readFileSync(new URL("./src/server/services/lead.service.js", import.meta.url), "utf8");
+  const app = readFileSync(new URL("./app.js", import.meta.url), "utf8");
+  assert.ok(leadService.includes("ensureLeadInboxConversation(lead)"), "createLead deve criar/vincular conversa");
+  assert.ok(leadService.includes('channel: "whatsapp"'), "conversa do lead manual deve ir para o canal WhatsApp");
+  assert.ok(leadService.includes("whatsappExternalId"), "telefone deve ser normalizado antes de virar externalId");
+  assert.ok(app.includes("ui.inbox.list = null"), "frontend deve invalidar cache do Inbox apos criar lead");
+});
+
+test("login bloqueia a UI antes de carregar o CRM", () => {
+  const app = readFileSync(new URL("./app.js", import.meta.url), "utf8");
+  const html = readFileSync(new URL("./index.html", import.meta.url), "utf8");
+  const server = readFileSync(new URL("./server.js", import.meta.url), "utf8");
+  const router = readFileSync(new URL("./src/server/index.js", import.meta.url), "utf8");
+  assert.ok(html.includes('body class="auth-locked"'), "HTML deve iniciar bloqueado");
+  assert.ok(app.includes("renderLogin") && app.includes("loginWithPassword"), "app.js deve renderizar e enviar login");
+  assert.ok(app.includes("AUTH_TOKEN_STORAGE"), "token autenticado deve ficar separado da chave antiga");
+  assert.ok(app.includes("Authorization") && app.includes("Bearer"), "frontend deve usar token de sessao");
+  assert.ok(server.includes('/api/auth/login') && server.includes("invalid_credentials"), "server.js deve expor login por usuario/senha");
+  assert.ok(router.includes("passwordHash") === false, "rotas publicas nao devem selecionar passwordHash");
+  assert.doesNotMatch(app, /window\.prompt\("Digite a ADMIN_API_KEY/, "UI nao deve pedir chave tecnica");
 });
 
 test("score automatico classifica lead quente quando ha alta intencao", () => {

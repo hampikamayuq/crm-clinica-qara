@@ -1,5 +1,7 @@
 // Seed inicial da Clinica QARA.
 
+import { randomBytes, scrypt as scryptCallback } from "node:crypto";
+import { promisify } from "node:util";
 import { PrismaClient } from "@prisma/client";
 
 try {
@@ -9,6 +11,7 @@ try {
 }
 
 const prisma = new PrismaClient();
+const scrypt = promisify(scryptCallback);
 
 const PRICE = {
   dermato: 550,
@@ -103,7 +106,74 @@ async function seedTags() {
   for (const name of tags) await prisma.tag.upsert({ where: { name }, update: {}, create: { name } });
 }
 
+async function seedUsers() {
+  for (const user of envUsers()) {
+    const passwordHash = await hashPassword(user.password);
+    await prisma.user.upsert({
+      where: { email: user.email },
+      update: {
+        name: user.name,
+        username: user.username,
+        role: user.role,
+        active: user.active,
+        passwordHash,
+      },
+      create: {
+        name: user.name,
+        username: user.username,
+        email: user.email,
+        role: user.role,
+        active: user.active,
+        passwordHash,
+      },
+    });
+  }
+}
+
+function envUsers() {
+  const users = [];
+  const bootstrapPassword = process.env.BOOTSTRAP_PASSWORD || process.env.ADMIN_PASSWORD || "";
+  if (bootstrapPassword) {
+    const username = normalizeLogin(process.env.BOOTSTRAP_USERNAME || process.env.ADMIN_USERNAME || "admin");
+    users.push({
+      name: process.env.BOOTSTRAP_NAME || process.env.ADMIN_NAME || username,
+      username,
+      email: normalizeLogin(process.env.BOOTSTRAP_EMAIL || process.env.ADMIN_EMAIL || (username.includes("@") ? username : `${username}@cliniqara.local`)),
+      role: "ADMIN",
+      active: true,
+      password: bootstrapPassword,
+    });
+  }
+  const raw = process.env.APP_USERS_JSON || "";
+  if (raw) {
+    for (const item of JSON.parse(raw)) {
+      const username = normalizeLogin(item.username || item.email);
+      if (!username || !item.password) continue;
+      users.push({
+        name: item.name || username,
+        username,
+        email: normalizeLogin(item.email || (username.includes("@") ? username : `${username}@cliniqara.local`)),
+        role: item.role || "SECRETARY",
+        active: item.active !== false,
+        password: item.password,
+      });
+    }
+  }
+  return users;
+}
+
+async function hashPassword(password) {
+  const salt = randomBytes(16).toString("base64url");
+  const hash = await scrypt(String(password), salt, 64);
+  return `scrypt$${salt}$${Buffer.from(hash).toString("base64url")}`;
+}
+
+function normalizeLogin(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
 async function main() {
+  await seedUsers();
   const units = await seedUnits();
   await seedProfessionals(units);
   await seedAppointmentTypes();
