@@ -81,6 +81,7 @@ let ui = {
   tasks: { list: null, loading: false },
   taskFilters: { status: "OPEN", assignedToId: "", overdue: false },
   users: null,
+  team: { users: null, editId: "" },
   quickReplies: null,
   waMode: "text",
   selectedVisualBotId: "",
@@ -237,6 +238,8 @@ function handleClick(event) {
 
   if (action === "toggle-menu") return toggleMenu();
   if (action === "logout") return logout();
+  if (action === "team-edit") { ui.team.editId = id; return renderConfig(); }
+  if (action === "team-new") { ui.team.editId = ""; return renderConfig(); }
   if (action === "new-lead") return openLeadModal();
   if (action === "close-modal") return closeModal();
   if (action === "export-data") return exportData();
@@ -333,6 +336,7 @@ function handleSubmit(event) {
   if (form.dataset.form === "appointment") createAppointment(data);
   if (form.dataset.form === "transaction") createTransaction(data);
   if (form.dataset.form === "settings") saveSettings(data);
+  if (form.dataset.form === "team-user") saveTeamUser(data);
   if (form.dataset.form === "inbox-task") createInboxTask(data);
   if (form.dataset.form === "patient") savePatient(data);
   if (form.dataset.form === "task") saveTask(data);
@@ -2824,6 +2828,7 @@ function deleteVisualBot(botId) {
 }
 
 function renderConfig() {
+  if (isAdmin() && ui.team.users === null) loadTeamUsers();
   appRoot().innerHTML = `
     <div class="config-grid">
       <section class="panel">
@@ -2875,6 +2880,8 @@ function renderConfig() {
         <input id="import-file" type="file" accept="application/json,.json" hidden />
       </section>
 
+      ${renderTeamPanel()}
+
       <section class="panel">
         <div class="section-header">
           <h2>Papeis e permissoes</h2>
@@ -2902,6 +2909,127 @@ function renderConfig() {
       </section>
     </div>
   `;
+}
+
+const ROLE_LABELS = { ADMIN: "Admin", DOCTOR: "Medico", SECRETARY: "Recepcao", FINANCE: "Financeiro" };
+
+function authUser() {
+  try {
+    return JSON.parse(sessionStorage.getItem(AUTH_USER_STORAGE) || "{}");
+  } catch {
+    return {};
+  }
+}
+
+function isAdmin() {
+  return authUser().role === "ADMIN";
+}
+
+// Tela administrativa de equipe (substitui a dependencia de APP_USERS_JSON no Render).
+// So aparece para ADMIN; o backend tambem exige ADMIN nas escritas.
+function renderTeamPanel() {
+  if (!isAdmin()) return "";
+  const list = ui.team.users || [];
+  const editing = list.find((u) => u.id === ui.team.editId);
+  const rows = list.length
+    ? list.map((u) => `
+        <tr>
+          <td>${escapeHtml(u.name)}</td>
+          <td>${escapeHtml(u.username || "—")}</td>
+          <td>${escapeHtml(u.email)}</td>
+          <td>${ROLE_LABELS[u.role] || escapeHtml(u.role)}</td>
+          <td><span class="chip ${u.active ? "green" : ""}">${u.active ? "Ativo" : "Inativo"}</span></td>
+          <td><button class="link-button" type="button" data-action="team-edit" data-id="${u.id}">Editar</button></td>
+        </tr>`).join("")
+    : `<tr><td colspan="6" class="muted">${ui.team.users === null ? "Carregando..." : "Nenhum usuario."}</td></tr>`;
+  const roleOptions = Object.entries(ROLE_LABELS)
+    .map(([value, label]) => `<option value="${value}" ${editing?.role === value ? "selected" : ""}>${label}</option>`)
+    .join("");
+  return `
+    <section class="panel">
+      <div class="section-header">
+        <h2>Equipe</h2>
+        <span class="chip primary">${list.length} usuario${list.length === 1 ? "" : "s"}</span>
+      </div>
+      <div class="data-table-wrap">
+        <table class="data-table">
+          <thead><tr><th>Nome</th><th>Usuario</th><th>E-mail</th><th>Papel</th><th>Status</th><th></th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+      <form data-form="team-user" class="form-grid" style="margin-top:16px">
+        <input type="hidden" name="id" value="${editing?.id || ""}" />
+        <div class="field">
+          <label for="team-name">Nome</label>
+          <input id="team-name" name="name" required value="${escapeHtml(editing?.name || "")}" />
+        </div>
+        <div class="field">
+          <label for="team-username">Usuario (login)</label>
+          <input id="team-username" name="username" value="${escapeHtml(editing?.username || "")}" placeholder="opcional, usa o e-mail" />
+        </div>
+        <div class="field">
+          <label for="team-email">E-mail</label>
+          <input id="team-email" name="email" type="email" required value="${escapeHtml(editing?.email || "")}" />
+        </div>
+        <div class="field">
+          <label for="team-role">Papel</label>
+          <select id="team-role" name="role">${roleOptions}</select>
+        </div>
+        <div class="field">
+          <label for="team-password">Senha ${editing ? "(deixe em branco para manter)" : ""}</label>
+          <input id="team-password" name="password" type="text" autocomplete="new-password" ${editing ? "" : "required"} minlength="6" />
+        </div>
+        <div class="field">
+          <label><input type="checkbox" name="active" ${editing ? (editing.active ? "checked" : "") : "checked"} /> Ativo</label>
+        </div>
+        <div class="modal-actions full">
+          ${editing ? `<button class="secondary-button" type="button" data-action="team-new">Cancelar edicao</button>` : ""}
+          <button class="primary-button" type="submit">${editing ? "Salvar usuario" : "Adicionar usuario"}</button>
+        </div>
+      </form>
+    </section>`;
+}
+
+async function loadTeamUsers() {
+  if (ui.team.users === null) ui.team.users = [];
+  try {
+    const response = await apiFetch("/api/users?all=1", {}, false);
+    if (response.ok) ui.team.users = (await response.json()).data || [];
+  } catch {
+    /* mantem lista atual */
+  } finally {
+    if (ui.view === "config") renderConfig();
+  }
+}
+
+async function saveTeamUser(data) {
+  const id = clean(data.id || "");
+  const body = {
+    name: clean(data.name || ""),
+    username: clean(data.username || ""),
+    email: clean(data.email || ""),
+    role: data.role || "SECRETARY",
+    active: data.active === "on" || data.active === true,
+  };
+  if (clean(data.password || "")) body.password = data.password;
+  if (!body.name || !body.email) return toast("Informe nome e e-mail.");
+  if (!id && !body.password) return toast("Defina uma senha para o novo usuario.");
+  try {
+    const response = await apiFetch(id ? `/api/users/${id}` : "/api/users", {
+      method: id ? "PATCH" : "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }, false);
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) return toast(payload.error || "Falha ao salvar usuario.");
+    toast(id ? "Usuario atualizado." : "Usuario adicionado.");
+    ui.team.editId = "";
+    ui.team.users = null;
+    ui.users = null; // invalida selects de atribuicao
+    loadTeamUsers();
+  } catch {
+    toast("Falha ao salvar usuario.");
+  }
 }
 
 function renderLeadSummary(lead) {

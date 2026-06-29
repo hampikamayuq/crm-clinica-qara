@@ -189,7 +189,7 @@ Em [`docs/`](docs/):
 ## Proximos passos para producao
 
 - Configurar backups e politica de retencao no PostgreSQL.
-- Criar tela administrativa para cadastrar/editar usuarios sem depender de `APP_USERS_JSON`.
+- Tela administrativa de equipe (cadastrar/editar usuarios) disponivel em **Dados > Equipe** para usuarios `ADMIN`; `APP_USERS_JSON` segue como bootstrap inicial.
 - Remover gradualmente fallbacks legados de `localStorage` e `data/channel-conversations.json`.
 - Rotacionar segredos vazados e manter credenciais apenas em variaveis de ambiente.
 

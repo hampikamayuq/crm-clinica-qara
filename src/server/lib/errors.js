@@ -13,3 +13,17 @@ export function notFound(message) {
   e.code = "not_found";
   return e;
 }
+
+export function forbidden(message) {
+  const e = new Error(message);
+  e.statusCode = 403;
+  e.code = "forbidden";
+  return e;
+}
+
+export function conflict(message) {
+  const e = new Error(message);
+  e.statusCode = 409;
+  e.code = "conflict";
+  return e;
+}

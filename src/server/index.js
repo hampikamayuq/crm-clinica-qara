@@ -17,6 +17,7 @@ import * as quickReplies from "./services/quickreply.service.js";
 import * as reports from "./services/report.service.js";
 import * as services from "./services/service.service.js";
 import * as tasks from "./services/task.service.js";
+import * as users from "./services/user.service.js";
 import * as webhooks from "./services/webhook.service.js";
 import * as bots from "./services/bot.service.js";
 import { classify } from "./services/classifier.service.js";
@@ -42,11 +43,15 @@ const routes = [
   ["POST", "/api/import/leads", ({ body, userId }) => csv.importLeads(body, userId), true],
   ["GET", "/api/followups", ({ query }) => followups.categorizedFollowups(query)],
 
-  ["GET", "/api/users", () => prisma.user.findMany({
-    where: { active: true },
-    orderBy: { name: "asc" },
-    select: { id: true, name: true, username: true, email: true, role: true, active: true },
-  })],
+  ["GET", "/api/users", ({ query }) => query.all
+    ? users.listAllUsers()
+    : prisma.user.findMany({
+        where: { active: true },
+        orderBy: { name: "asc" },
+        select: { id: true, name: true, username: true, email: true, role: true, active: true },
+      })],
+  ["POST", "/api/users", ({ body, req }) => users.createUser(body, req.user), true],
+  ["PATCH", "/api/users/:id", ({ params, body, req }) => users.updateUser(params.id, body, req.user), true],
   ["GET", "/api/units", () => prisma.clinicUnit.findMany({ where: { active: true }, orderBy: { name: "asc" } })],
   ["GET", "/api/appointment-types", () => prisma.appointmentType.findMany({ where: { active: true }, orderBy: { name: "asc" } })],
 
