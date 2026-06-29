@@ -312,7 +312,7 @@ const FEW_SHOT_EXAMPLES = [
     role: "assistant",
     content: JSON.stringify({
       reply:
-        "Ola! Eu sou a Tawany, da Clinica Qara. Que bom ter voce por aqui! Para eu te direcionar certinho, me conta seu nome completo e se voce prefere atendimento presencial em Copacabana ou teleconsulta?",
+        "Ola! Sou a Tawany, da Clinica Qara. Me conta seu nome e se voce prefere atendimento presencial ou teleconsulta?",
       actions: [
         { type: "set_stage", value: "Novo Lead" },
         { type: "set_field", value: "queixa=manchas no rosto" },
@@ -334,7 +334,7 @@ const FEW_SHOT_EXAMPLES = [
     role: "assistant",
     content: JSON.stringify({
       reply:
-        "Perfeito, Marina! Vou te apresentar a Dra. Diana Stohmann, nossa especialista em tricologia. Qual periodo fica melhor pra voce: manha, tarde ou noite, e tem algum dia preferido?",
+        "Teleconsulta funciona bem pra tricologia, sim. Vou ja te mostrar a Dra. Diana Stohmann, nossa especialista em cabelos. Qual turno fica melhor pra voce — manha, tarde ou noite?",
       actions: [
         { type: "set_tag", value: "tricologia" },
         { type: "set_field", value: "modalidade=teleconsulta" },
@@ -358,9 +358,31 @@ const FEW_SHOT_EXAMPLES = [
     role: "assistant",
     content: JSON.stringify({
       reply:
-        "Entendo a sua preocupacao, Carlos! So que o diagnostico e o que usar precisam da avaliacao do medico na consulta, entao nao consigo indicar por aqui. Quem cuida de unhas e o Dr. Miguel Ceccarelli, especialista na area. Quer que eu veja horarios pra voce, presencial ou por teleconsulta?",
+        "Pra saber o que e e indicar o tratamento certo, precisa de uma avaliacao com o dermatologista — nao tem como dizer por aqui. O Dr. Miguel Ceccarelli e o nosso especialista em unhas. Prefere presencial ou teleconsulta, Carlos?",
       actions: [{ type: "set_tag", value: "unhas" }],
       confidence: 0.8,
+    }),
+  },
+  {
+    role: "user",
+    content: JSON.stringify({
+      example: true,
+      isFirstMessage: false,
+      coletado: { nome: "Ana", queixa: "psoriase", modalidade: "presencial" },
+      faltando: ["periodo"],
+      lastMessage: "pode ser qualquer dia, prefiro de tarde",
+    }),
+  },
+  {
+    role: "assistant",
+    content: JSON.stringify({
+      reply:
+        "Tarde anotado. Deixa eu checar os horarios da Dra. Manuela e ja te mando as opcoes.",
+      actions: [
+        { type: "set_field", value: "periodo=tarde" },
+        { type: "set_stage", value: "Aguardando Horarios" },
+      ],
+      confidence: 0.9,
     }),
   },
 ];
@@ -765,7 +787,7 @@ async function runAgent(inboundMessage, store) {
 
   const conversation = getConversation(store, inboundMessage.channel, inboundMessage.externalId);
   const agentState = conversation.agentState || {};
-  const messages = (conversation.messages || []).slice(-12).map((message) => ({
+  const messages = (conversation.messages || []).slice(-20).map((message) => ({
     role: message.direction === "inbound" ? "user" : "assistant",
     content: message.text,
   }));
@@ -932,7 +954,7 @@ async function callOpenAI(messages) {
     response_format: { type: "json_object" },
     messages,
   };
-  if (supportsCustomTemperature) body.temperature = 0.2;
+  if (supportsCustomTemperature) body.temperature = 0.7;
   else body.reasoning_effort = reasoningEffort;
 
   const response = await fetch("https://api.openai.com/v1/chat/completions", {
