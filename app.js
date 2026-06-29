@@ -3021,7 +3021,7 @@ async function saveTeamUser(data) {
       body: JSON.stringify(body),
     }, false);
     const payload = await response.json().catch(() => ({}));
-    if (!response.ok) return toast(payload.error || "Falha ao salvar usuario.");
+    if (!response.ok) return toast(payload.error?.message || "Falha ao salvar usuario.");
     toast(id ? "Usuario atualizado." : "Usuario adicionado.");
     ui.team.editId = "";
     ui.team.users = null;
