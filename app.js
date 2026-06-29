@@ -75,6 +75,7 @@ let ui = {
   inboxSearch: "",
   inbox: { list: null, selectedId: null, messages: [], activities: [], loading: false },
   inboxFilters: { status: "", channel: "", assignedToId: "" },
+  inboxMobileView: "list",
   patients: { list: null, selectedId: null, selected: null, timeline: [], search: "", loading: false },
   funnel: { list: null, loading: false },
   funnelFilters: { assignedToId: "", temperature: "" },
@@ -279,6 +280,9 @@ function handleClick(event) {
   if (action === "inbox-lead-timeline") return openLeadTimeline(id);
   if (action === "inbox-convert-patient") return convertInboxLead(id);
   if (action === "inbox-refresh") { ui.inbox.list = null; return renderInbox(); }
+  if (action === "inbox-back-to-list") { ui.inboxMobileView = "list"; return renderInbox(); }
+  if (action === "inbox-show-side") { ui.inboxMobileView = "side"; return renderInbox(); }
+  if (action === "inbox-back-to-chat") { ui.inboxMobileView = "chat"; return renderInbox(); }
   if (action === "set-wa-mode") {
     ui.waMode = actionEl.dataset.mode || "text";
     return renderInbox();
@@ -915,7 +919,7 @@ function renderInbox() {
       ${renderOpsMetric("Com atendente", count("WAITING_TEAM"), "handoff / humano")}
       ${renderOpsMetric("Total", box.list.length, "conversas no banco")}
     </div>
-    <div class="inbox-layout">
+    <div class="inbox-layout" data-mobile-view="${ui.inboxMobileView || 'list'}">
       <section class="inbox-list" aria-label="Conversas">
         <div class="list-search">
           <input id="inbox-search" class="search-input" type="search" value="${escapeHtml(ui.inboxSearch)}" placeholder="Buscar conversa" />
@@ -1029,6 +1033,7 @@ async function loadInboxActivities(id, source = "conversation") {
 
 async function selectInboxConversation(id) {
   ui.inbox.selectedId = id;
+  if (window.innerWidth <= 900) ui.inboxMobileView = "chat";
   await Promise.all([loadInboxMessages(id), loadInboxActivities(id)]);
   renderInbox();
 }
@@ -1043,14 +1048,29 @@ async function reloadInboxKeepingSelection(id) {
 function renderDbConversationItem(c, selected) {
   const k = c.classification?.crm;
   const isSel = selected && c.id === selected.id;
+  const lastMsg = c.messages?.[0];
+  const preview = lastMsg?.text ? escapeHtml(lastMsg.text) : escapeHtml(k ? (PIPELINE_LABEL[k.pipeline_funil] || k.pipeline_funil) : channelLabel(c.channel) || c.channel);
+  const lastTime = (lastMsg?.createdAt || c.lastMessageAt)
+    ? new Date(lastMsg?.createdAt || c.lastMessageAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })
+    : "";
+  const chip = k?.precisa_humano_agora
+    ? '<span class="chip red conv-chip">Humano</span>'
+    : k?.prioridade
+    ? `<span class="chip ${PRIORITY_TONE[k.prioridade] || "primary"} conv-chip">${escapeHtml(k.prioridade)}</span>`
+    : "";
   return `
     <article class="conversation ${isSel ? "active" : ""}" data-action="select-conversation" data-id="${c.id}">
       <div class="avatar">${initials(inboxConvName(c))}</div>
-      <div class="item-main">
-        <div class="item-title">${escapeHtml(inboxConvName(c))}</div>
-        <div class="item-meta">${escapeHtml(k ? (PIPELINE_LABEL[k.pipeline_funil] || k.pipeline_funil) : channelLabel(c.channel) || c.channel)}</div>
+      <div class="conv-info">
+        <div class="conv-top">
+          <span class="conv-name">${escapeHtml(inboxConvName(c))}</span>
+          ${lastTime ? `<time class="conv-time">${lastTime}</time>` : ""}
+        </div>
+        <div class="conv-bottom">
+          <span class="conv-preview">${preview}</span>
+          ${chip}
+        </div>
       </div>
-      ${k?.precisa_humano_agora ? '<span class="chip red">Humano</span>' : k ? `<span class="chip ${PRIORITY_TONE[k.prioridade] || "primary"}">${escapeHtml(k.prioridade)}</span>` : ""}
     </article>`;
 }
 
@@ -1065,14 +1085,16 @@ function renderDbMessage(m) {
 function renderDbChat(c) {
   return `
     <div class="chat-header">
+      <button class="ghost-button mobile-only" type="button" data-action="inbox-back-to-list" aria-label="Voltar">←</button>
       <div class="avatar">${initials(inboxConvName(c))}</div>
       <div class="item-main">
         <div class="item-title">${escapeHtml(inboxConvName(c))}</div>
         <div class="item-meta">${escapeHtml(c.externalId || "")} · ${escapeHtml(conversationStatusLabel(c.status))}</div>
       </div>
       <div class="chat-header-spacer"></div>
-      <span class="chip ${c.channel === "instagram" ? "violet" : "green"}">${escapeHtml(channelLabel(c.channel) || c.channel)}</span>
-      <button class="secondary-button" type="button" data-action="inbox-refresh">Atualizar</button>
+      <span class="chip ${c.channel === "instagram" ? "violet" : "green"} desktop-only">${escapeHtml(channelLabel(c.channel) || c.channel)}</span>
+      <button class="ghost-button mobile-only" type="button" data-action="inbox-show-side" aria-label="Detalhes">⋯</button>
+      <button class="secondary-button desktop-only" type="button" data-action="inbox-refresh">Atualizar</button>
     </div>
     <div class="messages" id="messages">
       ${(ui.inbox.messages || []).map(renderDbMessage).join("") || emptyState("Sem mensagens.")}
@@ -1166,6 +1188,9 @@ function renderDbConversationSide(c) {
   const assignedId = c.assignedToId || c.assignedTo?.id || "";
   return `
     <div class="lead-summary">
+      <div class="side-mobile-header">
+        <button class="ghost-button mobile-only" type="button" data-action="inbox-back-to-chat" aria-label="Voltar">← Conversa</button>
+      </div>
       <h3>${escapeHtml(inboxConvName(c))}</h3>
       <p class="muted">${escapeHtml(c.externalId || "")}</p>
 
