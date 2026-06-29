@@ -385,6 +385,28 @@ const FEW_SHOT_EXAMPLES = [
       confidence: 0.9,
     }),
   },
+  {
+    role: "user",
+    content: JSON.stringify({
+      example: true,
+      isFirstMessage: false,
+      coletado: { queixa: "unha", modalidade: "presencial", periodo: "sabado manha" },
+      faltando: [],
+      lastMessage: "prefiro sabado la tem estacionamento? fica perto de onde",
+    }),
+  },
+  {
+    role: "assistant",
+    content: JSON.stringify({
+      reply:
+        "Em SP a unidade e no Itaim Bibi (R. Joaquim Floriano, 820). Estacionamento rotativo nas redondezas — sem vaga propria. Sabado manha certo, vou checar disponibilidade com a equipe.",
+      actions: [
+        { type: "set_field", value: "periodo=sabado manha" },
+        { type: "set_stage", value: "Aguardando Horarios" },
+      ],
+      confidence: 0.92,
+    }),
+  },
 ];
 
 const mimeTypes = {
