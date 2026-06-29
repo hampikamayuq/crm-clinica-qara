@@ -2,19 +2,19 @@
 
 ## v1 Banco
 
-Schema completo, seed QARA, endpoints Prisma, migracao JSON e README de setup.
+Schema completo, seed QARA, endpoints Prisma, login bootstrap e README de setup.
 
 ## v2 Operacao
 
-Inbox completo, timeline, pacientes administrativos, tarefas e kanban com filtros.
+Inbox completo, timeline, pacientes administrativos, tarefas, kanban com filtros e lead manual aparecendo no Inbox.
 
 ## v3 Financeiro
 
 Budgets, payments, relatorios, taxas e saldo por orcamento.
 
-## v4 Multiusuario
+## v4 Permissoes
 
-Login real, roles, auditoria por usuario e politicas LGPD.
+Endurecer roles, tela de gestao de usuarios, auditoria por usuario e politicas LGPD.
 
 ## v5 Automacoes
 

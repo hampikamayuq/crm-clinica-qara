@@ -2,23 +2,22 @@
 
 ## Estado Atual
 
-MVP estatico com `app.js`, `server.js`, JSON em `data/channel-conversations.json`, localStorage para funil/agenda/financeiro, bots por regras e agente opcional.
+App Node com `server.js`, SPA em `app.js`, PostgreSQL/Prisma como fonte da verdade para CRM, login multiusuario, bots por regras e agente opcional. Ainda existem fallbacks legados em `localStorage` e `data/channel-conversations.json`.
 
 ## Problemas
 
-- Persistencia dividida entre JSON/localStorage.
-- Pouca separacao entre entidades CRM.
-- Falta multiusuario, auditoria, workflow e permissoes reais.
 - Front ainda monolitico.
+- Permissoes por role ainda pouco aplicadas na UI.
+- Fallbacks legados ainda existem para compatibilidade.
 
 ## Mudancas
 
-1. PostgreSQL + Prisma.
-2. Backend modular em `src/server`.
-3. Timeline e auditoria.
-4. Inbox completo.
-5. Leads/pacientes, agenda, orcamentos e pagamentos.
-6. Workflows e permissoes.
+1. PostgreSQL + Prisma. Concluido.
+2. Backend modular em `src/server`. Concluido.
+3. Timeline, auditoria e login multiusuario. Em andamento.
+4. Inbox completo e lead manual aparecendo no Inbox. Concluido.
+5. Leads/pacientes, agenda, orcamentos e pagamentos. Em andamento.
+6. Workflows e permissoes por role. Proximo.
 7. Front modular quando os contratos estiverem estaveis.
 
 ## Riscos

@@ -2,7 +2,7 @@
 
 ## Lead Novo
 
-Webhook ou UI cria `Conversation`/`Lead`, registra `LEAD_CREATED`, cria tarefa de resposta e permite qualificar origem/interesse.
+Webhook ou UI cria `Lead`; quando ha WhatsApp/telefone, cria ou vincula `Conversation` para aparecer no Inbox. Registra `LEAD_CREATED` e permite qualificar origem/interesse.
 
 ## Consulta Marcada
 

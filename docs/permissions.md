@@ -13,6 +13,8 @@ Hoje, a UI exige login por usuario/senha do `User` no banco. A sessao usa token 
 ## Regras
 
 - `requireRole([...])` existe como helper preparatorio.
+- Login grava `req.user` e usa sessoes temporarias em memoria; reiniciar o servidor exige login novamente.
 - `MARKETING` nao acessa corpo de mensagens.
 - Alteracoes criticas devem gerar `AuditLog`.
-- Localhost pode usar bootstrap `admin` / `admin` se nenhuma senha for configurada; URL publica exige usuario no banco.
+- O primeiro admin nasce via `BOOTSTRAP_USERNAME`/`BOOTSTRAP_PASSWORD` no seed.
+- URL publica exige usuario no banco; `ADMIN_API_KEY` e apenas acesso tecnico opcional.

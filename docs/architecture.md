@@ -8,6 +8,7 @@ CRM QARA e um CRM medico-operacional para dermatologia: leads, inbox, agenda, or
 - `src/server/index.js`: roteador modular novo para endpoints Prisma.
 - `src/server/services/*`: regras de dominio.
 - `prisma/schema.prisma`: modelo persistente PostgreSQL.
+- `src/server/services/auth.service.js`: login por usuario/email e senha, sessoes em memoria e hash de senha.
 - `app.js`: SPA atual; sera modularizada incrementalmente quando o backend estiver estavel.
 
 ## Referencias Aplicadas
@@ -23,4 +24,4 @@ CRM QARA e um CRM medico-operacional para dermatologia: leads, inbox, agenda, or
 - Evolucao incremental sem quebrar o MVP.
 - Sem dado clinico estruturado.
 - Respostas API novas em `{ data, error }`.
-- Auditoria e permissao entram nos fluxos criticos antes de uso multiusuario real.
+- Login multiusuario ativo; permissoes por role ainda sao base preparatoria para endurecimento futuro.

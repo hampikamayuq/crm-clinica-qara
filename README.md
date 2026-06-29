@@ -1,6 +1,6 @@
 # CliniQara CRM
 
-MVP estatico para clinicas que precisam de CRM comercial, inbox, agenda e financeiro simples, sem prontuario.
+CRM medico-operacional para clinicas com leads, inbox, agenda e financeiro administrativo, sem prontuario.
 
 ## O que esta incluido
 
@@ -13,38 +13,38 @@ MVP estatico para clinicas que precisam de CRM comercial, inbox, agenda e financ
 - Webhook universal para receber leads de formularios externos.
 - Bots automaticos importados de fluxo JSON, incluindo o fluxo `Leads novos`.
 - Agente OpenAI opcional para interpretar mensagens livres e acionar o funil.
-- Persistencia em `localStorage`.
-- Exportacao/importacao em JSON.
+- Login multiusuario por usuario/email e senha.
+- Persistencia em PostgreSQL via Prisma.
+- Exportacao/importacao em CSV e exportacao local em JSON.
 - Layout responsivo para desktop e mobile.
 
-## Como rodar sem integracoes
+## Como rodar local
 
-Abra `index.html` no navegador.
+1. Crie o arquivo `.env` a partir de `.env.example`.
+2. Preencha `DATABASE_URL` com a URL externa do Postgres.
+3. Defina `BOOTSTRAP_USERNAME` e `BOOTSTRAP_PASSWORD` para criar o primeiro admin.
+4. Rode:
 
-Para publicar apenas como app estatico, envie estes arquivos para qualquer hospedagem estatica:
+```bash
+npm install
+npm run prisma:generate
+npm run db:push
+npm run prisma:seed
+npm start
+```
 
-- `index.html`
-- `styles.css`
-- `app.js`
-- `flows/leads-novos.bot.js`
+5. Abra `http://localhost:3000` e entre com o usuario bootstrap.
 
 ## Como rodar com WhatsApp API e Instagram
 
-1. Crie o arquivo `.env` a partir de `.env.example`.
+1. Siga o setup local acima.
 2. Preencha `META_VERIFY_TOKEN`.
 3. Para WhatsApp Cloud API, preencha `WHATSAPP_ACCESS_TOKEN` e `WHATSAPP_PHONE_NUMBER_ID`.
 4. Para Instagram DM, preencha `INSTAGRAM_PAGE_ACCESS_TOKEN`.
 5. Para agente OpenAI, preencha `AI_PROVIDER=openai`, `OPENAI_API_KEY` e, se quiser, `OPENAI_MODEL`.
-6. Para publicar em URL publica, preencha tambem `BOOTSTRAP_USERNAME`, `BOOTSTRAP_PASSWORD`, `META_APP_SECRET` e `LEAD_WEBHOOK_SECRET`.
-7. Rode:
-
-```bash
-npm start
-```
-
-8. Abra `http://localhost:3000`.
-9. Na aba Canais, copie a URL `/webhooks/meta`.
-10. No painel da Meta, use essa URL como Callback URL e o mesmo `META_VERIFY_TOKEN`.
+6. Para publicar em URL publica, preencha tambem `META_APP_SECRET` e `LEAD_WEBHOOK_SECRET`.
+7. Na aba Canais, copie a URL `/webhooks/meta`.
+8. No painel da Meta, use essa URL como Callback URL e o mesmo `META_VERIFY_TOKEN`.
 
 Para receber webhooks reais, a URL precisa estar publica em HTTPS. Em desenvolvimento, use ngrok, Cloudflare Tunnel ou equivalente apontando para `localhost:3000`. O endpoint `POST /webhooks/meta` valida `X-Hub-Signature-256` quando `META_APP_SECRET` esta configurado; sem esse segredo, webhooks sem assinatura so passam em localhost ou com `ALLOW_UNSIGNED_WEBHOOKS=true`.
 
@@ -66,7 +66,11 @@ Em URL publica, o usuario entra com usuario ou email e senha cadastrados no banc
 ]
 ```
 
+No Render, use a `DATABASE_URL` interna do banco `qara-crm-db`. No `.env` local, use a URL externa.
+
 Endpoints Prisma principais:
+
+Exceto login e webhooks externos, as rotas `/api/*` exigem `Authorization: Bearer <token>` retornado por `POST /api/auth/login`.
 
 - `GET/POST/PATCH /api/leads`, score automatico, `POST /api/leads/:id/score`, `POST /api/leads/score-all`, `POST /api/leads/:id/convert-to-patient`, timeline por lead.
 - `GET/POST/PATCH /api/patients`, timeline por paciente.
@@ -92,7 +96,12 @@ curl -X POST http://localhost:3000/api/webhook \
 Exemplo de importacao CSV:
 
 ```bash
+TOKEN=$(curl -s -X POST http://localhost:3000/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"sua-senha"}' | node -pe 'JSON.parse(require("fs").readFileSync(0,"utf8")).token')
+
 curl -X POST http://localhost:3000/api/import/leads \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: text/csv" \
   --data-binary $'Nome;Telefone;Email;Origem;Interesse\nMaria Silva;+5521999999999;maria@email.com;site;Melasma'
 ```
@@ -128,9 +137,9 @@ Exemplo de botoes:
 
 Modelos precisam estar aprovados pela Meta antes do envio.
 
-## Banco de dados (PostgreSQL + Prisma) - v1 em andamento
+## Banco de dados (PostgreSQL + Prisma)
 
-O CRM esta evoluindo de `localStorage`/JSON para **PostgreSQL via Prisma** como fonte da verdade. Esta fundacao e **aditiva**: o MVP atual continua funcionando enquanto o banco e adotado de forma incremental.
+O CRM usa **PostgreSQL via Prisma** como fonte da verdade para usuarios, leads, inbox, pacientes, agenda, tarefas e financeiro administrativo. `localStorage` ainda existe para preferencias/dados locais legados da SPA.
 
 Setup:
 
@@ -139,11 +148,11 @@ npm install
 cp .env.example .env        # preencha DATABASE_URL
 npm run prisma:generate     # gera o Prisma Client
 npm run db:push             # cria as tabelas no banco (ou prisma:migrate)
-npm run prisma:seed         # popula unidades, profissionais, tipos, servicos, quick replies e tags
+npm run prisma:seed         # popula usuarios bootstrap, unidades, profissionais, tipos, servicos, quick replies e tags
 npm run dev                 # sobe o servidor (= npm start)
 ```
 
-Use a URL externa do Postgres no `.env` local. No servico web do Render, configure `DATABASE_URL` com a URL interna do banco `qara-crm-db`.
+Use a URL externa do Postgres no `.env` local. No servico web do Render, configure `DATABASE_URL` com a URL interna do banco `qara-crm-db`. Sessoes ficam em memoria; reiniciar o servidor exige login novamente.
 
 Scripts disponiveis:
 
@@ -177,9 +186,12 @@ Em [`docs/`](docs/):
 - [`refactor-plan.md`](docs/refactor-plan.md) - plano incremental.
 - [`roadmap.md`](docs/roadmap.md) - proximas versoes.
 
-## Proximo passo para producao
+## Proximos passos para producao
 
-Substituir `localStorage` e `data/channel-conversations.json` por banco de dados com backup e politica de retencao. O arquivo JSON atual ja usa escrita atomica, permissao restrita e fila simples de escrita para reduzir perda de mensagens no MVP. A migracao dos dados locais sera feita por `scripts/migrate-json-to-db.js` (sem apagar os arquivos antigos).
+- Configurar backups e politica de retencao no PostgreSQL.
+- Criar tela administrativa para cadastrar/editar usuarios sem depender de `APP_USERS_JSON`.
+- Remover gradualmente fallbacks legados de `localStorage` e `data/channel-conversations.json`.
+- Rotacionar segredos vazados e manter credenciais apenas em variaveis de ambiente.
 
 ## Bots
 
@@ -198,9 +210,9 @@ Quando `AI_PROVIDER=openai` e `OPENAI_API_KEY` estao configurados, o webhook ten
 
 O agente atende como **Tawany**, secretaria virtual da Clinica Qara (Copacabana - RJ), com opcao de teleconsulta. Ele e limitado a atendimento administrativo/comercial: acolher, fazer triagem por queixa, direcionar ao medico correto e conduzir ao agendamento. Nao diagnostica, nao prescreve, nao promete resultado e nao substitui avaliacao medica.
 
-A persona, as regras e a base de conhecimento ficam em `server.js`:
+A persona fica em [`src/agent/agent-system-prompt-tawany.md`](src/agent/agent-system-prompt-tawany.md). O contrato de runtime e parte da base operacional ficam em `server.js`:
 
-- `SYSTEM_PROMPT`: persona, tom, regras rigidas, triagem, agendamento e formato de saida.
+- `loadAgentPrompt()`: carrega a persona editavel.
 - `careTeam`: medicos, foco por queixa, tag Kommo e valores por modalidade.
   - Dr. Diego (cirurgia) R$ 450 | Dr. Miguel (unhas) RJ R$ 650 / SP R$ 800 / tele R$ 650 | Dra. Diana (tricologia) R$ 550 | Dra. Manuela (autoimune) R$ 550 | Dr. Fabricio (dermatopediatria) R$ 550.
 - `clinicKnowledge`: pagamento, etapas Kommo, fluxo de agendamento e gatilhos de handoff humano.
