@@ -975,11 +975,13 @@ function injectDoctorPresentation(reply, actions, conversation) {
   return reply ? `${text}\n\n${reply}` : text;
 }
 
-// Modelos GPT-5 e o-series (reasoning) so aceitam temperature padrao (1).
+// Modelos GPT-5 e o-series (reasoning) nao aceitam temperature customizada: usam reasoning_effort.
+// gpt-4.1 e gpt-4o usam temperature normalmente.
 const supportsCustomTemperature = !/^(gpt-5|o1|o3|o4)/i.test(openAIModel);
 // Tarefa roteirizada nao precisa raciocinio profundo: "minimal" leva ~2s vs ~15s no padrao.
 // ponytail: env tunavel; suba para "low"/"medium" se a triagem perder qualidade.
-const reasoningEffort = process.env.OPENAI_REASONING_EFFORT || "minimal";
+// "low" equivale a aproximadamente temperature 0.7 em modelos reasoning — mais natural que "minimal".
+const reasoningEffort = process.env.OPENAI_REASONING_EFFORT || "low";
 
 async function callOpenAI(messages) {
   const body = {
