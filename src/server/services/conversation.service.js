@@ -91,6 +91,7 @@ export function listConversations(filters = {}) {
       patient: { select: { id: true, name: true, phone: true } },
       assignedTo: { select: { id: true, name: true } },
       tags: { include: { tag: true } },
+      messages: { orderBy: { createdAt: "desc" }, take: 1, select: { text: true, direction: true, createdAt: true } },
     },
   });
 }
