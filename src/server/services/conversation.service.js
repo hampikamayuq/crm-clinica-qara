@@ -122,6 +122,13 @@ export function resolveConversation(id) {
   return prisma.conversation.update({ where: { id }, data: { status: "RESOLVED" } });
 }
 
+export async function deleteConversation(id) {
+  // Mensagens e tags caem em cascata (onDelete: Cascade); atividades viram conversationId null.
+  // ponytail: remove so do banco; o store JSON e fallback so quando o banco esta vazio.
+  await prisma.conversation.delete({ where: { id } });
+  return { id, deleted: true };
+}
+
 export async function addTag(id, tagName) {
   if (!tagName) throw badRequest("name e obrigatorio");
   const tag = await prisma.tag.upsert({ where: { name: tagName }, update: {}, create: { name: tagName } });

@@ -272,6 +272,7 @@ function handleClick(event) {
   if (action === "inbox-reply") return sendInboxReply(id);
   if (action === "inbox-receive") return receiveInbox(id);
   if (action === "inbox-resolve") return resolveInboxConversation(id);
+  if (action === "inbox-delete") return deleteInboxConversation(id);
   if (action === "inbox-add-tag") return addInboxTag(id);
   if (action === "inbox-add-note") return addInboxNote(id);
   if (action === "inbox-new-task") return openInboxTaskModal(id);
@@ -1223,6 +1224,7 @@ function renderDbConversationSide(c) {
       <div class="button-row" style="margin-top:14px">
         <button class="secondary-button" type="button" data-action="inbox-new-task" data-id="${c.id}">Criar tarefa</button>
         <button class="secondary-button" type="button" data-action="inbox-resolve" data-id="${c.id}">Resolver</button>
+        <button class="danger-button" type="button" data-action="inbox-delete" data-id="${c.id}">Excluir</button>
       </div>
     </div>`;
 }
@@ -1392,6 +1394,21 @@ async function resolveInboxConversation(id) {
     toast("Conversa resolvida.");
   } catch {
     toast("Falha ao resolver.");
+  }
+}
+
+async function deleteInboxConversation(id) {
+  if (!confirm("Excluir esta conversa e todas as mensagens? Esta acao nao pode ser desfeita.")) return;
+  try {
+    const response = await apiFetch(`/api/conversations/${id}`, { method: "DELETE" }, false);
+    if (!response.ok) return toast("Falha ao excluir conversa.");
+    if (ui.inbox.selectedId === id) ui.inbox.selectedId = null;
+    ui.inbox.list = null;
+    await loadInboxData();
+    if (ui.view === "inbox") renderInbox();
+    toast("Conversa excluida.");
+  } catch {
+    toast("Falha ao excluir conversa.");
   }
 }
 
