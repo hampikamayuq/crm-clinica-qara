@@ -424,6 +424,14 @@ const server = createServer(async (req, res) => {
       return json(res, result.ok ? 200 : 400, result);
     }
 
+    // Simulador interno de mensagem recebida (staff logado). Reusa o mesmo pipeline do
+    // webhook, mas sem assinatura Meta: ja passou pela auth de /api/* (linha ~394).
+    if (url.pathname === "/api/inbox/simulate" && req.method === "POST") {
+      const body = await readJson(req);
+      const result = await processIncomingPayload(body);
+      return json(res, result.received ? 200 : 400, { ...result, ok: Boolean(result.received) });
+    }
+
     if (url.pathname === "/api/agent/test" && req.method === "POST") {
       const body = await readJson(req);
       const result = await testAgentReply(body);
@@ -487,8 +495,16 @@ async function receiveWebhook(req, res) {
   }
 
   const payload = JSON.parse(rawBody || "{}");
+  const result = await processIncomingPayload(payload);
+  return json(res, 200, { ok: true, ...result });
+}
+
+// Processa um payload (formato webhook Meta) de mensagens recebidas: grava na store,
+// roda automacoes/agente e espelha no banco. Compartilhado entre o webhook publico
+// (com assinatura) e o simulador interno autenticado (/api/inbox/simulate).
+async function processIncomingPayload(payload) {
   const incoming = extractIncomingMessages(payload);
-  const result = await withStoreLock(async () => {
+  return withStoreLock(async () => {
     const store = readStore();
     const automationResults = [];
 
@@ -501,8 +517,6 @@ async function receiveWebhook(req, res) {
     if (incoming.length) writeStore(store);
     return { received: incoming.length, automated: automationResults.length };
   });
-
-  return json(res, 200, { ok: true, ...result });
 }
 
 function extractIncomingMessages(payload) {

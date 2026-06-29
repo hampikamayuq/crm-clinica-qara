@@ -1366,11 +1366,18 @@ async function receiveInbox(id) {
       ? { object: "instagram", entry: [{ messaging: [{ sender: { id: c.externalId }, message: { text } }] }] }
       : { object: "whatsapp_business_account", entry: [{ changes: [{ value: { contacts: [{ wa_id: c.externalId, profile: { name: inboxConvName(c) } }], messages: [{ from: c.externalId, id: `sim-${Date.now()}`, timestamp: String(Math.floor(Date.now() / 1000)), type: "text", text: { body: text } }] } }] }] };
   try {
-    await fetch("/webhooks/meta", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+    // Endpoint interno autenticado (o webhook publico /webhooks/meta exige assinatura Meta).
+    const response = await apiFetch("/api/inbox/simulate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }, false);
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || !result.received) {
+      return toast("Mensagem nao registrada. Verifique se esta logado e tente novamente.");
+    }
+    if (input) input.value = "";
     toast("Mensagem recebida — classificando...");
     setTimeout(async () => {
       ui.inbox.list = null;
       await loadInboxData();
+      if (ui.view === "inbox") renderInbox();
     }, 1600);
   } catch {
     toast("Falha ao simular recebimento.");
