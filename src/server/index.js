@@ -80,7 +80,6 @@ const routes = [
   ["PATCH", "/api/conversations/:id", ({ params, body }) => conversations.updateConversation(params.id, body), true],
   ["POST", "/api/conversations/:id/assign", ({ params, body }) => conversations.assignConversation(params.id, body.assignedToId || null), true],
   ["POST", "/api/conversations/:id/resolve", ({ params }) => conversations.resolveConversation(params.id), true],
-  ["DELETE", "/api/conversations/:id", ({ params }) => conversations.deleteConversation(params.id), true],
   ["POST", "/api/conversations/:id/tags", ({ params, body }) => conversations.addTag(params.id, body.name), true],
   ["POST", "/api/conversations/:id/notes", ({ params, body, userId }) => conversations.addNote(params.id, body.text, userId), true],
   ["GET", "/api/conversations/:id/messages", ({ params, query }) => conversations.getMessages(params.id, query.limit)],
@@ -252,4 +251,5 @@ function listActivities(filters = {}) {
 }
 
 export { getInboxLegacyShape };
+export const deleteConversationDb = (args) => conversations.deleteConversation(args);
 export default handleModularApi;

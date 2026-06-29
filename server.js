@@ -12,6 +12,7 @@ loadEnv();
 let handleModularApi = null;
 let mirrorMessageToDb = null;
 let getInboxLegacyShape = null;
+let deleteConversationDb = null;
 let classifyInboundToDb = null;
 let loginWithPassword = null;
 let authorizeRequest = null;
@@ -21,7 +22,7 @@ try {
   console.warn("Auth de usuarios indisponivel:", error.message);
 }
 try {
-  ({ handleModularApi, mirrorMessageToDb, getInboxLegacyShape, classifyInboundToDb } = await import("./src/server/index.js"));
+  ({ handleModularApi, mirrorMessageToDb, getInboxLegacyShape, classifyInboundToDb, deleteConversationDb } = await import("./src/server/index.js"));
 } catch (error) {
   console.warn("CRM modular API indisponivel (seguindo so com endpoints legados):", error.message);
 }
@@ -430,6 +431,29 @@ const server = createServer(async (req, res) => {
       const body = await readJson(req);
       const result = await processIncomingPayload(body);
       return json(res, result.received ? 200 : 400, { ...result, ok: Boolean(result.received) });
+    }
+
+    // Exclui conversa do inbox. O id exposto e `${channel}:${externalId}` (mesma chave no
+    // store JSON e no banco), entao remove dos dois para nao reaparecer pelo fallback.
+    if (url.pathname.startsWith("/api/conversations/") && req.method === "DELETE") {
+      const id = decodeURIComponent(url.pathname.slice("/api/conversations/".length));
+      const sep = id.indexOf(":");
+      const channel = sep >= 0 ? id.slice(0, sep) : "";
+      const externalId = sep >= 0 ? id.slice(sep + 1) : "";
+      let removedFromStore = false;
+      await withStoreLock(async () => {
+        const store = readStore();
+        if (store.conversations[id]) {
+          delete store.conversations[id];
+          writeStore(store);
+          removedFromStore = true;
+        }
+      });
+      let dbDeleted = 0;
+      if (deleteConversationDb && channel && externalId) {
+        try { ({ deleted: dbDeleted } = await deleteConversationDb({ channel, externalId })); } catch (e) { console.warn("delete_convo_db:", e.message); }
+      }
+      return json(res, 200, { ok: true, removed: removedFromStore || dbDeleted > 0, dbDeleted });
     }
 
     if (url.pathname === "/api/agent/test" && req.method === "POST") {

@@ -1401,7 +1401,8 @@ async function deleteInboxConversation(id) {
   if (!confirm("Excluir esta conversa e todas as mensagens? Esta acao nao pode ser desfeita.")) return;
   try {
     const response = await apiFetch(`/api/conversations/${id}`, { method: "DELETE" }, false);
-    if (!response.ok) return toast("Falha ao excluir conversa.");
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || !result.removed) return toast("Falha ao excluir conversa.");
     if (ui.inbox.selectedId === id) ui.inbox.selectedId = null;
     ui.inbox.list = null;
     await loadInboxData();

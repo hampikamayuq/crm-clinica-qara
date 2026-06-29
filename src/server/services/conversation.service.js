@@ -122,11 +122,13 @@ export function resolveConversation(id) {
   return prisma.conversation.update({ where: { id }, data: { status: "RESOLVED" } });
 }
 
-export async function deleteConversation(id) {
-  // Mensagens e tags caem em cascata (onDelete: Cascade); atividades viram conversationId null.
-  // ponytail: remove so do banco; o store JSON e fallback so quando o banco esta vazio.
-  await prisma.conversation.delete({ where: { id } });
-  return { id, deleted: true };
+// A conversa e identificada por channel+externalId (o id exposto ao cliente e
+// `${channel}:${externalId}`, nao o cuid). deleteMany evita erro quando nao existe no banco.
+// Mensagens e tags caem em cascata (onDelete: Cascade); atividades viram conversationId null.
+export async function deleteConversation({ channel, externalId }) {
+  if (!channel || !externalId) return { deleted: 0 };
+  const result = await prisma.conversation.deleteMany({ where: { channel, externalId } });
+  return { deleted: result.count };
 }
 
 export async function addTag(id, tagName) {
