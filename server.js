@@ -554,8 +554,19 @@ async function processIncomingPayload(payload) {
     const store = readStore();
     const automationResults = [];
 
+    // Grava todas as mensagens primeiro para que o agente tenha contexto completo.
     for (const message of incoming) {
       upsertConversationMessage(store, message);
+    }
+
+    // Por conversa, dispara automações apenas para a última mensagem do batch.
+    // Evita respostas duplicadas quando o paciente envia várias mensagens rapidamente.
+    const lastPerConv = new Map();
+    for (const message of incoming) {
+      lastPerConv.set(`${message.channel}:${message.externalId}`, message);
+    }
+
+    for (const message of lastPerConv.values()) {
       const replies = await runAutomations(message, store);
       automationResults.push(...replies);
     }
