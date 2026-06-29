@@ -43,6 +43,7 @@ const pageTitles = {
   dashboard: ["Hoje", "Operacao comercial da clinica"],
   inbox: ["Inbox", "Conversas, respostas e agendamentos"],
   leads: ["Funil", "Leads ate virarem consultas"],
+  pacientes: ["Pacientes", "Cadastro e historico administrativo"],
   operations: ["Operacao", "Briefing, follow-ups e importacao"],
   agenda: ["Agenda", "Horarios e confirmacoes"],
   financeiro: ["Financeiro", "Recebimentos sem prontuario"],
@@ -61,6 +62,7 @@ let ui = {
   inboxSearch: "",
   inbox: { list: null, selectedId: null, messages: [], activities: [], loading: false },
   inboxFilters: { status: "", channel: "", assignedToId: "" },
+  patients: { list: null, selectedId: null, selected: null, timeline: [], search: "", loading: false },
   users: null,
   quickReplies: null,
   waMode: "text",
@@ -130,6 +132,9 @@ function handleClick(event) {
   if (action === "import-bot") return document.querySelector("#bot-import-file")?.click();
   if (action === "reset-data") return resetData();
   if (action === "select-lead") return selectLead(id);
+  if (action === "select-patient") return selectPatient(id);
+  if (action === "new-patient") return openPatientModal();
+  if (action === "patient-edit") return openPatientModal(id);
   if (action === "set-funnel-view") {
     ui.funnelView = actionEl.dataset.mode || "kanban";
     render();
@@ -213,6 +218,7 @@ function handleSubmit(event) {
   if (form.dataset.form === "transaction") createTransaction(data);
   if (form.dataset.form === "settings") saveSettings(data);
   if (form.dataset.form === "inbox-task") createInboxTask(data);
+  if (form.dataset.form === "patient") savePatient(data);
   if (form.dataset.form === "wa-template") saveWhatsAppTemplate(data);
   if (form.dataset.form === "visual-bot") saveVisualBot(data);
   if (form.dataset.form === "visual-step") saveVisualStep(data);
@@ -238,6 +244,7 @@ function handleChange(event) {
     ui.financeFilter = target.value;
     render();
   }
+  if (target.matches("#patient-search")) { ui.patients.search = target.value; return renderPatients(); }
   if (target.matches("#inbox-filter-status")) { ui.inboxFilters.status = target.value; return renderInbox(); }
   if (target.matches("#inbox-filter-channel")) { ui.inboxFilters.channel = target.value; return renderInbox(); }
   if (target.matches("#inbox-filter-assigned")) { ui.inboxFilters.assignedToId = target.value; return renderInbox(); }
@@ -571,6 +578,7 @@ function render() {
   if (ui.view === "dashboard") renderDashboard();
   if (ui.view === "inbox") renderInbox();
   if (ui.view === "leads") renderLeads();
+  if (ui.view === "pacientes") renderPatients();
   if (ui.view === "operations") renderOperations();
   if (ui.view === "agenda") renderAgenda();
   if (ui.view === "financeiro") renderFinanceiro();
@@ -1351,6 +1359,209 @@ async function createInboxTask(data) {
   closeModal();
   if (result === null) return toast("Falha ao criar tarefa.");
   toast("Tarefa criada.");
+}
+
+// ---- Pacientes (view DB-native, sem espelho local) ----
+
+function renderPatients() {
+  const box = ui.patients;
+  if (box.list === null) {
+    if (!box.loading) loadPatients();
+    appRoot().innerHTML = `<div class="data-table-wrap" style="padding:24px">Carregando pacientes do banco...</div>`;
+    return;
+  }
+  const list = filteredPatients();
+  const selected = box.list.find((p) => p.id === box.selectedId) || null;
+  appRoot().innerHTML = `
+    <div class="toolbar">
+      <div class="toolbar-left">
+        <input id="patient-search" class="search-input" type="search" value="${escapeHtml(box.search)}" placeholder="Buscar por nome ou telefone" />
+      </div>
+      <div class="toolbar-right">
+        <button class="secondary-button" type="button" data-action="new-patient">
+          <span aria-hidden="true">＋</span>
+          Novo paciente
+        </button>
+      </div>
+    </div>
+    <div class="agenda-layout">
+      <section aria-label="Pacientes">${renderPatientsTable(list)}</section>
+      <aside class="lead-pane" aria-label="Detalhe do paciente">
+        ${selected ? renderPatientDetail(selected) : emptyState("Selecione um paciente.")}
+      </aside>
+    </div>
+  `;
+}
+
+function filteredPatients() {
+  const q = (ui.patients.search || "").trim().toLowerCase();
+  const list = ui.patients.list || [];
+  if (!q) return list;
+  return list.filter((p) => `${p.name || ""} ${p.phone || ""}`.toLowerCase().includes(q));
+}
+
+function renderPatientsTable(list) {
+  if (!list.length) return emptyState("Nenhum paciente. Converta um lead no inbox ou cadastre um novo.");
+  return `
+    <div class="data-table-wrap">
+      <table class="data-table">
+        <thead>
+          <tr><th>Nome</th><th>Telefone</th><th>E-mail</th><th>CPF</th><th>LGPD</th><th>Criado</th></tr>
+        </thead>
+        <tbody>
+          ${list
+            .map(
+              (p) => `
+            <tr data-action="select-patient" data-id="${p.id}" style="cursor:pointer${p.id === ui.patients.selectedId ? ";background:var(--surface-2,#f1f5f9)" : ""}">
+              <td><div class="cell-main"><span class="avatar sm">${initials(p.name)}</span>${escapeHtml(p.name)}</div></td>
+              <td class="muted">${escapeHtml(p.phone || "-")}</td>
+              <td class="muted">${escapeHtml(p.email || "-")}</td>
+              <td class="muted">${escapeHtml(p.cpf || "-")}</td>
+              <td>${p.lgpdConsent ? '<span class="chip green">Sim</span>' : '<span class="chip">Não</span>'}</td>
+              <td class="muted">${escapeHtml(formatDate(p.createdAt))}</td>
+            </tr>`,
+            )
+            .join("")}
+        </tbody>
+      </table>
+    </div>`;
+}
+
+function patientField(label, value) {
+  return `<div class="side-label">${escapeHtml(label)}</div><div>${escapeHtml(value || "—")}</div>`;
+}
+
+function renderPatientDetail(p) {
+  const birth = p.birthDate ? formatDate(p.birthDate) : "";
+  return `
+    <div class="lead-summary">
+      <h3>${escapeHtml(p.name)}</h3>
+      <div class="button-row" style="margin-top:8px">
+        <button class="secondary-button" type="button" data-action="patient-edit" data-id="${p.id}">Editar</button>
+      </div>
+      <div class="side-block">
+        ${patientField("Telefone", p.phone)}
+        ${patientField("E-mail", p.email)}
+        ${patientField("CPF", p.cpf)}
+        ${patientField("Nascimento", birth)}
+        ${patientField("Canal preferido", p.preferredChannel)}
+        ${patientField("LGPD", p.lgpdConsent ? "Consentimento dado" : "Sem consentimento")}
+        ${p.notesAdministrative ? `<div class="side-label">Notas</div><div>${escapeHtml(p.notesAdministrative)}</div>` : ""}
+      </div>
+      <div class="side-block">
+        <div class="side-label">Histórico</div>
+        <div class="activity-list">${(ui.patients.timeline || []).map(renderActivityItem).join("") || '<p class="muted">Sem atividades.</p>'}</div>
+      </div>
+    </div>`;
+}
+
+async function loadPatients() {
+  ui.patients.loading = true;
+  try {
+    const response = await apiFetch("/api/patients?limit=200", {}, false);
+    ui.patients.list = response.ok ? (await response.json()).data || [] : [];
+  } catch {
+    ui.patients.list = [];
+  } finally {
+    ui.patients.loading = false;
+    if (ui.view === "pacientes") renderPatients();
+  }
+}
+
+async function selectPatient(id) {
+  ui.patients.selectedId = id;
+  await loadPatientDetail(id);
+  renderPatients();
+}
+
+async function loadPatientDetail(id) {
+  try {
+    const [detail, timeline] = await Promise.all([
+      apiFetch(`/api/patients/${id}`, {}, false),
+      apiFetch(`/api/patients/${id}/timeline`, {}, false),
+    ]);
+    ui.patients.selected = detail.ok ? (await detail.json()).data || null : null;
+    ui.patients.timeline = timeline.ok ? (await timeline.json()).data || [] : [];
+  } catch {
+    ui.patients.timeline = [];
+  }
+}
+
+function openPatientModal(id = "") {
+  const p = id ? ui.patients.selected || {} : {};
+  const v = (k) => escapeHtml(p[k] || "");
+  openModal(`
+    <div class="modal-header">
+      <h2>${id ? "Editar paciente" : "Novo paciente"}</h2>
+      <button class="icon-button" type="button" data-action="close-modal" aria-label="Fechar">×</button>
+    </div>
+    <form data-form="patient" class="form-grid">
+      <input type="hidden" name="id" value="${escapeHtml(id)}" />
+      <div class="field full">
+        <label for="patient-name">Nome</label>
+        <input id="patient-name" name="name" required value="${v("name")}" />
+      </div>
+      <div class="field">
+        <label for="patient-phone">Telefone</label>
+        <input id="patient-phone" name="phone" value="${v("phone")}" />
+      </div>
+      <div class="field">
+        <label for="patient-email">E-mail</label>
+        <input id="patient-email" name="email" type="email" value="${v("email")}" />
+      </div>
+      <div class="field">
+        <label for="patient-cpf">CPF</label>
+        <input id="patient-cpf" name="cpf" value="${v("cpf")}" />
+      </div>
+      <div class="field">
+        <label for="patient-birth">Nascimento</label>
+        <input id="patient-birth" name="birthDate" type="date" value="${p.birthDate ? String(p.birthDate).slice(0, 10) : ""}" />
+      </div>
+      <div class="field">
+        <label for="patient-channel">Canal preferido</label>
+        <input id="patient-channel" name="preferredChannel" value="${v("preferredChannel")}" />
+      </div>
+      <div class="field">
+        <label><input type="checkbox" name="lgpdConsent" ${p.lgpdConsent ? "checked" : ""} /> Consentimento LGPD</label>
+      </div>
+      <div class="field full">
+        <label for="patient-notes">Notas administrativas</label>
+        <textarea id="patient-notes" name="notesAdministrative" rows="3">${v("notesAdministrative")}</textarea>
+      </div>
+      <div class="modal-actions full">
+        <button class="secondary-button" type="button" data-action="close-modal">Cancelar</button>
+        <button class="primary-button" type="submit">${id ? "Salvar" : "Cadastrar"}</button>
+      </div>
+    </form>
+  `);
+}
+
+async function savePatient(data) {
+  const name = clean(data.name || "");
+  if (!name) return toast("Informe o nome do paciente.");
+  const body = {
+    name,
+    phone: clean(data.phone || "") || null,
+    email: clean(data.email || "") || null,
+    cpf: clean(data.cpf || "") || null,
+    birthDate: data.birthDate || null,
+    preferredChannel: clean(data.preferredChannel || "") || null,
+    lgpdConsent: data.lgpdConsent === "on" || data.lgpdConsent === true,
+    notesAdministrative: clean(data.notesAdministrative || "") || null,
+  };
+  const id = clean(data.id || "");
+  const result = id
+    ? await dbWrite(`/api/patients/${id}`, "PATCH", body)
+    : await dbWrite("/api/patients", "POST", body);
+  closeModal();
+  if (result === null) return toast("Falha ao salvar paciente.");
+  toast(id ? "Paciente atualizado." : "Paciente cadastrado.");
+  ui.patients.list = null;
+  if (result.id) {
+    ui.patients.selectedId = result.id;
+    await loadPatientDetail(result.id);
+  }
+  await loadPatients();
 }
 
 function renderLeads() {

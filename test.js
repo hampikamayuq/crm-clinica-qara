@@ -159,3 +159,16 @@ test("WhatsApp template monta modelo aprovado", () => {
   assert.equal(payload.template.components[0].parameters.length, 2);
   assert.equal(previewOutboundText({}, { messageType: "template", whatsapp: { templateName: "consulta_confirmacao" } }), "[Modelo WhatsApp: consulta_confirmacao]");
 });
+
+test("pacientes: view DB-native liga acoes, endpoints e nav", () => {
+  const app = readFileSync(new URL("./app.js", import.meta.url), "utf8");
+  const html = readFileSync(new URL("./index.html", import.meta.url), "utf8");
+  for (const action of ["select-patient", "new-patient", "patient-edit", "patient-search", 'data-form="patient"']) {
+    assert.ok(app.includes(action), `app.js deveria tratar ${action}`);
+  }
+  for (const piece of ["renderPatients", "/api/patients?limit=200", "/api/patients/", "/timeline"]) {
+    assert.ok(app.includes(piece), `app.js deveria conter ${piece}`);
+  }
+  assert.ok(app.includes('"PATCH"') && app.includes('dbWrite("/api/patients"'), "app.js deveria criar e editar paciente");
+  assert.ok(html.includes('data-view="pacientes"'), "index.html deveria ter o nav de pacientes");
+});
