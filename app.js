@@ -4746,7 +4746,11 @@ function nowTime() {
 }
 
 function formatDate(value) {
-  return new Intl.DateTimeFormat("pt-BR", { day: "2-digit", month: "short" }).format(parseISODate(value));
+  if (!value) return "—";
+  // "YYYY-MM-DD" via parseISODate (data local, sem shift de fuso); datetime ISO/Date via new Date().
+  const date = typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value) ? parseISODate(value) : new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+  return new Intl.DateTimeFormat("pt-BR", { day: "2-digit", month: "short" }).format(date);
 }
 
 function formatDateTime(value) {
