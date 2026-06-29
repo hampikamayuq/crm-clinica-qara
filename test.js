@@ -172,3 +172,22 @@ test("pacientes: view DB-native liga acoes, endpoints e nav", () => {
   assert.ok(app.includes('"PATCH"') && app.includes('dbWrite("/api/patients"'), "app.js deveria criar e editar paciente");
   assert.ok(html.includes('data-view="pacientes"'), "index.html deveria ter o nav de pacientes");
 });
+
+test("kanban DB-native: funil le e grava LeadStage real do banco", () => {
+  const app = readFileSync(new URL("./app.js", import.meta.url), "utf8");
+  for (const piece of [
+    "renderFunnelKanban",
+    "moveFunnelLead",
+    "data-funnel-column",
+    "data-funnel-select",
+    "funnel-filter-assigned",
+    "funnel-filter-temp",
+  ]) {
+    assert.ok(app.includes(piece), `app.js deveria conter ${piece}`);
+  }
+  for (const stage of ["NEW", "CONTACTED", "BUDGET_SENT", "PROCEDURE_SCHEDULED", "REACTIVATE"]) {
+    assert.ok(app.includes(stage), `LEAD_STAGES deveria conter ${stage}`);
+  }
+  assert.ok(/dbWrite\(`\/api\/leads\/\$\{id\}`, "PATCH", \{ stage \}\)/.test(app), "moveFunnelLead deveria gravar { stage } no banco");
+  assert.ok(app.includes("/api/leads?") || app.includes("apiFetch(`/api/leads?"), "loadFunnel deveria ler /api/leads com query");
+});

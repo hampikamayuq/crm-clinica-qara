@@ -29,6 +29,15 @@ const STAGE_DB_TO_UI = {
   LOST: "entrada",
 };
 
+// Kanban DB-native: colunas = LeadStage real do banco (sem traducao).
+const LEAD_STAGES = ["NEW", "CONTACTED", "WAITING_PATIENT", "APPOINTMENT_SCHEDULED", "ATTENDED", "BUDGET_SENT", "PROCEDURE_SCHEDULED", "LOST", "REACTIVATE"];
+const LEAD_STAGE_LABEL = {
+  NEW: "Novo", CONTACTED: "Contatado", WAITING_PATIENT: "Aguardando paciente",
+  APPOINTMENT_SCHEDULED: "Consulta agendada", ATTENDED: "Atendido", BUDGET_SENT: "Orcamento enviado",
+  PROCEDURE_SCHEDULED: "Procedimento agendado", LOST: "Perdido", REACTIVATE: "Reativar",
+};
+const TEMP_DB_LABEL = { HOT: "Quente", WARM: "Morno", COLD: "Frio" };
+
 const professionals = [
   "Dr. Diego Galvez",
   "Dr. Miguel Ceccarelli",
@@ -63,6 +72,8 @@ let ui = {
   inbox: { list: null, selectedId: null, messages: [], activities: [], loading: false },
   inboxFilters: { status: "", channel: "", assignedToId: "" },
   patients: { list: null, selectedId: null, selected: null, timeline: [], search: "", loading: false },
+  funnel: { list: null, loading: false },
+  funnelFilters: { assignedToId: "", temperature: "" },
   users: null,
   quickReplies: null,
   waMode: "text",
@@ -245,6 +256,9 @@ function handleChange(event) {
     render();
   }
   if (target.matches("#patient-search")) { ui.patients.search = target.value; return renderPatients(); }
+  if (target.matches("#funnel-filter-assigned")) { ui.funnelFilters.assignedToId = target.value; ui.funnel.list = null; return renderLeads(); }
+  if (target.matches("#funnel-filter-temp")) { ui.funnelFilters.temperature = target.value; ui.funnel.list = null; return renderLeads(); }
+  if (target.matches("[data-funnel-select]")) return moveFunnelLead(target.dataset.id, target.value);
   if (target.matches("#inbox-filter-status")) { ui.inboxFilters.status = target.value; return renderInbox(); }
   if (target.matches("#inbox-filter-channel")) { ui.inboxFilters.channel = target.value; return renderInbox(); }
   if (target.matches("#inbox-filter-assigned")) { ui.inboxFilters.assignedToId = target.value; return renderInbox(); }
@@ -329,10 +343,15 @@ function handleDragEnd(event) {
 }
 
 function handleDragOver(event) {
-  if (event.target.closest("[data-stage-column]")) event.preventDefault();
+  if (event.target.closest("[data-stage-column]") || event.target.closest("[data-funnel-column]")) event.preventDefault();
 }
 
 function handleDrop(event) {
+  const funnelCol = event.target.closest("[data-funnel-column]");
+  if (funnelCol) {
+    event.preventDefault();
+    return moveFunnelLead(event.dataTransfer.getData("text/plain"), funnelCol.dataset.stage);
+  }
   const column = event.target.closest("[data-stage-column]");
   if (!column) return;
   event.preventDefault();
@@ -1604,7 +1623,7 @@ function renderLeads() {
         ? renderTriageView()
         : ui.funnelView === "table"
         ? renderLeadTable(filteredLeads())
-        : `<section class="pipeline" aria-label="Funil de leads">${stages.map(renderStageColumn).join("")}</section>`
+        : renderFunnelKanban()
     }
   `;
 }
@@ -2819,42 +2838,102 @@ function renderLeadSummary(lead) {
   `;
 }
 
-function renderStageColumn(stage) {
-  const leads = filteredLeads().filter((lead) => lead.stage === stage.id);
+// ---- Kanban do funil DB-native (modo "kanban" da view Leads) ----
+
+function renderFunnelKanban() {
+  const box = ui.funnel;
+  if (box.list === null) {
+    if (!box.loading) loadFunnel();
+    return `<div class="data-table-wrap" style="padding:24px">Carregando funil do banco...</div>`;
+  }
+  const q = (ui.leadSearch || "").trim().toLowerCase();
+  const list = q
+    ? box.list.filter((l) => `${l.name || ""} ${l.interest || ""} ${l.source || ""}`.toLowerCase().includes(q))
+    : box.list;
+  const columns = LEAD_STAGES.map((stage) => {
+    const cards = list.filter((l) => l.stage === stage);
+    return `
+      <div class="stage-column" data-funnel-column data-stage="${stage}">
+        <div class="stage-header">
+          <div class="stage-title">${escapeHtml(LEAD_STAGE_LABEL[stage])}</div>
+          <span class="chip">${cards.length}</span>
+        </div>
+        ${cards.map(renderFunnelCard).join("") || `<div class="empty-state">Sem leads</div>`}
+      </div>`;
+  }).join("");
   return `
-    <div class="stage-column" data-stage-column data-stage="${stage.id}">
-      <div class="stage-header">
-        <div class="stage-title">${stage.label}</div>
-        <span class="chip ${stage.tone}">${leads.length}</span>
-      </div>
-      ${leads.map(renderLeadCard).join("") || `<div class="empty-state">Sem leads</div>`}
-    </div>
-  `;
+    ${renderFunnelFilters()}
+    <section class="pipeline" aria-label="Funil de leads (banco)">${columns}</section>`;
 }
 
-function renderLeadCard(lead) {
+function renderFunnelFilters() {
+  const users = ui.users || [];
+  const f = ui.funnelFilters;
+  const opt = (v, label, cur) => `<option value="${escapeHtml(v)}" ${cur === v ? "selected" : ""}>${escapeHtml(label)}</option>`;
   return `
-    <article class="lead-card" draggable="true" data-lead-card data-id="${lead.id}">
+    <div class="inbox-filters" style="margin-bottom:12px">
+      <select id="funnel-filter-assigned">
+        ${opt("", "Responsável: todos", f.assignedToId)}
+        ${users.map((u) => opt(u.id, u.name, f.assignedToId)).join("")}
+      </select>
+      <select id="funnel-filter-temp">
+        ${opt("", "Temperatura: todas", f.temperature)}
+        ${["HOT", "WARM", "COLD"].map((t) => opt(t, TEMP_DB_LABEL[t], f.temperature)).join("")}
+      </select>
+    </div>`;
+}
+
+function renderFunnelCard(l) {
+  const value = Number(l.estimatedValue || 0);
+  return `
+    <article class="lead-card" draggable="true" data-lead-card data-id="${l.id}">
       <div class="lead-card-title">
         <div>
-          <h3>${escapeHtml(lead.name)}</h3>
-          <p>${escapeHtml(lead.interest)} · ${escapeHtml(lead.source)}</p>
+          <h3>${escapeHtml(l.name)}</h3>
+          <p>${escapeHtml(l.interest || "—")} · ${escapeHtml(l.source || "—")}</p>
         </div>
         <div class="card-chips">
-          <span class="chip ${scoreTone(lead.score)}">Score ${lead.score || 0}</span>
-          <span class="chip ${stageTone(lead.stage)}">${formatMoney(lead.value)}</span>
+          <span class="chip ${scoreTone(l.score)}">Score ${l.score || 0}</span>
+          ${value ? `<span class="chip">${formatMoney(value)}</span>` : ""}
         </div>
       </div>
-      <p>${escapeHtml(lead.nextStep)} · ${formatDate(lead.followUp)}</p>
+      ${l.nextAction ? `<p>${escapeHtml(l.nextAction)}${l.nextActionAt ? ` · ${formatDate(l.nextActionAt)}` : ""}</p>` : ""}
       <div class="mini-actions">
-        <button type="button" data-action="select-lead" data-id="${lead.id}">Inbox</button>
-        <button type="button" data-action="open-appointment" data-id="${lead.id}">Agendar</button>
-        <select data-stage-select data-id="${lead.id}" aria-label="Mover lead">
-          ${stages.map((stage) => `<option value="${stage.id}" ${stage.id === lead.stage ? "selected" : ""}>${stage.label}</option>`).join("")}
+        <select data-funnel-select data-id="${l.id}" aria-label="Mover lead">
+          ${LEAD_STAGES.map((s) => `<option value="${s}" ${s === l.stage ? "selected" : ""}>${escapeHtml(LEAD_STAGE_LABEL[s])}</option>`).join("")}
         </select>
       </div>
-    </article>
-  `;
+    </article>`;
+}
+
+async function loadFunnel() {
+  ui.funnel.loading = true;
+  const f = ui.funnelFilters;
+  const qs = new URLSearchParams({ limit: "500" });
+  if (f.assignedToId) qs.set("assignedToId", f.assignedToId);
+  if (f.temperature) qs.set("temperature", f.temperature);
+  try {
+    const [res] = await Promise.all([apiFetch(`/api/leads?${qs}`, {}, false), ensureInboxRefs()]);
+    ui.funnel.list = res.ok ? (await res.json()).data || [] : [];
+  } catch {
+    ui.funnel.list = [];
+  } finally {
+    ui.funnel.loading = false;
+    if (ui.view === "leads" && ui.funnelView === "kanban") renderLeads();
+  }
+}
+
+// Move a etapa direto no banco (enum LeadStage), com update otimista e reload.
+async function moveFunnelLead(id, stage) {
+  if (!LEAD_STAGES.includes(stage)) return;
+  const lead = (ui.funnel.list || []).find((l) => l.id === id);
+  if (lead && lead.stage === stage) return;
+  if (lead) lead.stage = stage;
+  renderLeads();
+  const ok = await dbWrite(`/api/leads/${id}`, "PATCH", { stage });
+  toast(ok === null ? "Falha ao mover lead." : `Movido para ${LEAD_STAGE_LABEL[stage]}.`);
+  ui.funnel.list = null;
+  await loadFunnel();
 }
 
 function renderConversation(lead) {
