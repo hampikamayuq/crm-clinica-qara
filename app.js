@@ -37,6 +37,8 @@ const LEAD_STAGE_LABEL = {
   PROCEDURE_SCHEDULED: "Procedimento agendado", LOST: "Perdido", REACTIVATE: "Reativar",
 };
 const TEMP_DB_LABEL = { HOT: "Quente", WARM: "Morno", COLD: "Frio" };
+const TASK_STATUS_LABEL = { OPEN: "Aberta", IN_PROGRESS: "Em andamento", DONE: "Concluida", CANCELED: "Cancelada" };
+const TASK_STATUS_TONE = { OPEN: "blue", IN_PROGRESS: "amber", DONE: "green", CANCELED: "" };
 
 const professionals = [
   "Dr. Diego Galvez",
@@ -53,6 +55,7 @@ const pageTitles = {
   inbox: ["Inbox", "Conversas, respostas e agendamentos"],
   leads: ["Funil", "Leads ate virarem consultas"],
   pacientes: ["Pacientes", "Cadastro e historico administrativo"],
+  tarefas: ["Tarefas", "Follow-ups e pendencias da equipe"],
   operations: ["Operacao", "Briefing, follow-ups e importacao"],
   agenda: ["Agenda", "Horarios e confirmacoes"],
   financeiro: ["Financeiro", "Recebimentos sem prontuario"],
@@ -74,6 +77,8 @@ let ui = {
   patients: { list: null, selectedId: null, selected: null, timeline: [], search: "", loading: false },
   funnel: { list: null, loading: false },
   funnelFilters: { assignedToId: "", temperature: "" },
+  tasks: { list: null, loading: false },
+  taskFilters: { status: "OPEN", assignedToId: "", overdue: false },
   users: null,
   quickReplies: null,
   waMode: "text",
@@ -146,6 +151,9 @@ function handleClick(event) {
   if (action === "select-patient") return selectPatient(id);
   if (action === "new-patient") return openPatientModal();
   if (action === "patient-edit") return openPatientModal(id);
+  if (action === "new-task") return openTaskModal();
+  if (action === "task-edit") return openTaskModal(id);
+  if (action === "task-complete") return completeTaskById(id);
   if (action === "set-funnel-view") {
     ui.funnelView = actionEl.dataset.mode || "kanban";
     render();
@@ -230,6 +238,7 @@ function handleSubmit(event) {
   if (form.dataset.form === "settings") saveSettings(data);
   if (form.dataset.form === "inbox-task") createInboxTask(data);
   if (form.dataset.form === "patient") savePatient(data);
+  if (form.dataset.form === "task") saveTask(data);
   if (form.dataset.form === "wa-template") saveWhatsAppTemplate(data);
   if (form.dataset.form === "visual-bot") saveVisualBot(data);
   if (form.dataset.form === "visual-step") saveVisualStep(data);
@@ -256,6 +265,9 @@ function handleChange(event) {
     render();
   }
   if (target.matches("#patient-search")) { ui.patients.search = target.value; return renderPatients(); }
+  if (target.matches("#task-filter-status")) { ui.taskFilters.status = target.value; ui.tasks.list = null; return renderTasks(); }
+  if (target.matches("#task-filter-assigned")) { ui.taskFilters.assignedToId = target.value; ui.tasks.list = null; return renderTasks(); }
+  if (target.matches("#task-filter-overdue")) { ui.taskFilters.overdue = target.checked; ui.tasks.list = null; return renderTasks(); }
   if (target.matches("#funnel-filter-assigned")) { ui.funnelFilters.assignedToId = target.value; ui.funnel.list = null; return renderLeads(); }
   if (target.matches("#funnel-filter-temp")) { ui.funnelFilters.temperature = target.value; ui.funnel.list = null; return renderLeads(); }
   if (target.matches("[data-funnel-select]")) return moveFunnelLead(target.dataset.id, target.value);
@@ -598,6 +610,7 @@ function render() {
   if (ui.view === "inbox") renderInbox();
   if (ui.view === "leads") renderLeads();
   if (ui.view === "pacientes") renderPatients();
+  if (ui.view === "tarefas") renderTasks();
   if (ui.view === "operations") renderOperations();
   if (ui.view === "agenda") renderAgenda();
   if (ui.view === "financeiro") renderFinanceiro();
@@ -2836,6 +2849,177 @@ function renderLeadSummary(lead) {
       </div>
     </div>
   `;
+}
+
+// ---- Tarefas (view DB-native) ----
+
+function renderTasks() {
+  const box = ui.tasks;
+  if (box.list === null) {
+    if (!box.loading) loadTasks();
+    appRoot().innerHTML = `<div class="data-table-wrap" style="padding:24px">Carregando tarefas do banco...</div>`;
+    return;
+  }
+  appRoot().innerHTML = `
+    <div class="toolbar">
+      <div class="toolbar-left">${renderTaskFilters()}</div>
+      <div class="toolbar-right">
+        <button class="secondary-button" type="button" data-action="new-task">
+          <span aria-hidden="true">＋</span>
+          Nova tarefa
+        </button>
+      </div>
+    </div>
+    ${renderTasksTable(box.list)}
+  `;
+}
+
+function renderTaskFilters() {
+  const users = ui.users || [];
+  const f = ui.taskFilters;
+  const opt = (v, label, cur) => `<option value="${escapeHtml(v)}" ${cur === v ? "selected" : ""}>${escapeHtml(label)}</option>`;
+  return `
+    <div class="inbox-filters">
+      <select id="task-filter-status">
+        ${opt("", "Status: todos", f.status)}
+        ${["OPEN", "IN_PROGRESS", "DONE", "CANCELED"].map((s) => opt(s, TASK_STATUS_LABEL[s], f.status)).join("")}
+      </select>
+      <select id="task-filter-assigned">
+        ${opt("", "Responsável: todos", f.assignedToId)}
+        ${users.map((u) => opt(u.id, u.name, f.assignedToId)).join("")}
+      </select>
+      <label class="muted" style="display:flex;align-items:center;gap:6px">
+        <input type="checkbox" id="task-filter-overdue" ${f.overdue ? "checked" : ""} /> Atrasadas
+      </label>
+    </div>`;
+}
+
+function renderTasksTable(list) {
+  if (!list.length) return emptyState("Nenhuma tarefa para os filtros atuais.");
+  const userName = (uid) => (ui.users || []).find((u) => u.id === uid)?.name || "—";
+  const now = Date.now();
+  return `
+    <div class="data-table-wrap">
+      <table class="data-table">
+        <thead>
+          <tr><th>Título</th><th>Responsável</th><th>Vínculo</th><th>Vencimento</th><th>Status</th><th></th></tr>
+        </thead>
+        <tbody>
+          ${list
+            .map((t) => {
+              const open = t.status !== "DONE" && t.status !== "CANCELED";
+              const overdue = open && t.dueAt && new Date(t.dueAt).getTime() < now;
+              const vinc = t.leadId ? "Lead" : t.patientId ? "Paciente" : "—";
+              return `
+              <tr>
+                <td><strong>${escapeHtml(t.title)}</strong>${t.description ? `<div class="muted">${escapeHtml(t.description)}</div>` : ""}</td>
+                <td class="muted">${escapeHtml(userName(t.assignedToId))}</td>
+                <td class="muted">${vinc}</td>
+                <td class="muted"${overdue ? ' style="color:var(--danger,#dc2626);font-weight:600"' : ""}>${t.dueAt ? escapeHtml(formatDate(t.dueAt)) : "—"}</td>
+                <td><span class="chip ${TASK_STATUS_TONE[t.status] || ""}">${escapeHtml(TASK_STATUS_LABEL[t.status] || t.status)}</span></td>
+                <td>
+                  ${open ? `<button class="link-button" type="button" data-action="task-complete" data-id="${t.id}">Concluir</button>` : ""}
+                  <button class="link-button" type="button" data-action="task-edit" data-id="${t.id}">Editar</button>
+                </td>
+              </tr>`;
+            })
+            .join("")}
+        </tbody>
+      </table>
+    </div>`;
+}
+
+async function loadTasks() {
+  ui.tasks.loading = true;
+  const f = ui.taskFilters;
+  const qs = new URLSearchParams({ limit: "500" });
+  if (f.status) qs.set("status", f.status);
+  if (f.assignedToId) qs.set("assignedToId", f.assignedToId);
+  if (f.overdue) qs.set("overdue", "true");
+  try {
+    const [res] = await Promise.all([apiFetch(`/api/tasks?${qs}`, {}, false), ensureInboxRefs()]);
+    ui.tasks.list = res.ok ? (await res.json()).data || [] : [];
+  } catch {
+    ui.tasks.list = [];
+  } finally {
+    ui.tasks.loading = false;
+    if (ui.view === "tarefas") renderTasks();
+  }
+}
+
+async function completeTaskById(id) {
+  const ok = await dbWrite(`/api/tasks/${id}/complete`, "POST", {});
+  toast(ok === null ? "Falha ao concluir tarefa." : "Tarefa concluída.");
+  ui.tasks.list = null;
+  await loadTasks();
+}
+
+function openTaskModal(id = "") {
+  const t = id ? (ui.tasks.list || []).find((x) => x.id === id) || {} : {};
+  const users = ui.users || [];
+  openModal(`
+    <div class="modal-header">
+      <h2>${id ? "Editar tarefa" : "Nova tarefa"}</h2>
+      <button class="icon-button" type="button" data-action="close-modal" aria-label="Fechar">×</button>
+    </div>
+    <form data-form="task" class="form-grid">
+      <input type="hidden" name="id" value="${escapeHtml(id)}" />
+      <div class="field full">
+        <label for="task-title">Título</label>
+        <input id="task-title" name="title" required value="${escapeHtml(t.title || "")}" />
+      </div>
+      <div class="field full">
+        <label for="task-desc">Descrição</label>
+        <textarea id="task-desc" name="description" rows="2">${escapeHtml(t.description || "")}</textarea>
+      </div>
+      <div class="field">
+        <label for="task-due">Vencimento</label>
+        <input id="task-due" name="dueAt" type="date" value="${t.dueAt ? String(t.dueAt).slice(0, 10) : ""}" />
+      </div>
+      <div class="field">
+        <label for="task-assignee">Responsável</label>
+        <select id="task-assignee" name="assignedToId">
+          <option value="">—</option>
+          ${users.map((u) => `<option value="${u.id}" ${t.assignedToId === u.id ? "selected" : ""}>${escapeHtml(u.name)}</option>`).join("")}
+        </select>
+      </div>
+      ${
+        id
+          ? `<div class="field">
+        <label for="task-status">Status</label>
+        <select id="task-status" name="status">
+          ${["OPEN", "IN_PROGRESS", "DONE", "CANCELED"].map((s) => `<option value="${s}" ${t.status === s ? "selected" : ""}>${escapeHtml(TASK_STATUS_LABEL[s])}</option>`).join("")}
+        </select>
+      </div>`
+          : ""
+      }
+      <div class="modal-actions full">
+        <button class="secondary-button" type="button" data-action="close-modal">Cancelar</button>
+        <button class="primary-button" type="submit">${id ? "Salvar" : "Criar"}</button>
+      </div>
+    </form>
+  `);
+}
+
+async function saveTask(data) {
+  const title = clean(data.title || "");
+  if (!title) return toast("Informe o título da tarefa.");
+  const body = {
+    title,
+    description: clean(data.description || "") || null,
+    dueAt: data.dueAt || null,
+    assignedToId: data.assignedToId || null,
+  };
+  const id = clean(data.id || "");
+  if (id) body.status = data.status || "OPEN";
+  const result = id
+    ? await dbWrite(`/api/tasks/${id}`, "PATCH", body)
+    : await dbWrite("/api/tasks", "POST", body);
+  closeModal();
+  if (result === null) return toast("Falha ao salvar tarefa.");
+  toast(id ? "Tarefa atualizada." : "Tarefa criada.");
+  ui.tasks.list = null;
+  await loadTasks();
 }
 
 // ---- Kanban do funil DB-native (modo "kanban" da view Leads) ----

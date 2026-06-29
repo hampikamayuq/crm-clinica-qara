@@ -191,3 +191,25 @@ test("kanban DB-native: funil le e grava LeadStage real do banco", () => {
   assert.ok(/dbWrite\(`\/api\/leads\/\$\{id\}`, "PATCH", \{ stage \}\)/.test(app), "moveFunnelLead deveria gravar { stage } no banco");
   assert.ok(app.includes("/api/leads?") || app.includes("apiFetch(`/api/leads?"), "loadFunnel deveria ler /api/leads com query");
 });
+
+test("tarefas: view DB-native lista, conclui e edita via /api/tasks", () => {
+  const app = readFileSync(new URL("./app.js", import.meta.url), "utf8");
+  const html = readFileSync(new URL("./index.html", import.meta.url), "utf8");
+  for (const piece of [
+    "renderTasks",
+    "loadTasks",
+    "new-task",
+    "task-edit",
+    "task-complete",
+    "task-filter-status",
+    "task-filter-assigned",
+    "task-filter-overdue",
+    'data-form="task"',
+  ]) {
+    assert.ok(app.includes(piece), `app.js deveria conter ${piece}`);
+  }
+  assert.ok(app.includes("/api/tasks?"), "loadTasks deveria ler /api/tasks com filtros");
+  assert.ok(app.includes("/complete"), "deveria concluir via /api/tasks/:id/complete");
+  assert.ok(app.includes('dbWrite("/api/tasks"') && app.includes('"PATCH"'), "deveria criar e editar tarefa");
+  assert.ok(html.includes('data-view="tarefas"'), "index.html deveria ter o nav de tarefas");
+});
