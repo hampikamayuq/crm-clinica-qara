@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { buildWhatsAppMessagePayload, guardAgentReply, injectDoctorPresentation, parseAgentJson, polishAgentReply, previewOutboundText } from "./server.js";
+import { faqReply } from "./src/server/services/agent-faq.service.js";
 import { calculateLeadScore, temperatureFromScore } from "./src/server/services/lead-score.service.js";
 
 // Money path: a agente NUNCA pode mandar um valor que nao seja de careTeam.
@@ -60,6 +61,20 @@ test("present_doctor injeta apresentacao curta, nao ficha completa", () => {
   );
   assert.match(out, /Dr\. Miguel Ceccarelli/);
   assert.doesNotMatch(out, /Estacionamento|Valor da Consulta|Formas de Pagamento/);
+});
+
+test("faqReply responde horarios por medico sem chamar IA", () => {
+  const out = faqReply("que dias o Dr. Miguel atende?", {}, {
+    locations: {},
+    careTeam: [{
+      id: "miguel",
+      name: "Dr. Miguel Ceccarelli",
+      locations: [{ local: "Copacabana, RJ", horarios: "Segundas 14h-20h" }],
+      values: { presencial_rj: 650, teleconsulta: 650 },
+    }],
+  });
+  assert.match(out, /Dr\. Miguel Ceccarelli/);
+  assert.match(out, /Segundas 14h-20h/);
 });
 
 test("schema Prisma mantem o escopo CRM completo", () => {
