@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { classify } from "./src/server/services/classifier.service.js";
 import { EXAMPLES } from "./src/server/config/qara-knowledge.js";
 
-// Fixtures (conversation-examples.md). Campos do crm exatos; tags por conteúdo.
+// Fixtures do classificador. Campos do crm exatos; tags por conteúdo.
 for (const { message, crm } of EXAMPLES) {
   test(`classify: ${message}`, () => {
     const out = classify(message, {}).crm;

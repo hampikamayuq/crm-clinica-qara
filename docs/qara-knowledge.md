@@ -17,7 +17,7 @@ Prompt **curto/comportamental** + **knowledge como dados** + **classificador det
 - Endpoint: `POST /api/classify`.
 - Auto-classificação: cada mensagem de paciente no webhook é classificada e gravada em `Conversation.classification` (e `Lead.classification` se houver lead); **P1 → handoff** (tarefa + conversa em `WAITING_TEAM`).
 - Visualização: aba **Funil → Triagem** (filtros por pipeline/prioridade/temperatura).
-- Testes: [`classifier.test.js`](../classifier.test.js) (fixtures de `conversation-examples.md` + invariantes).
+- Testes: [`classifier.test.js`](../classifier.test.js) (fixtures de `src/server/config/qara-knowledge.js` + invariantes). `conversation-examples.md` é apenas referência de tom.
 
 ## Pipelines (IDs)
 
@@ -29,3 +29,9 @@ Retorno/pós-operatório ficam na especialidade original (via etapa + tag).
 `{ mensagem_paciente, crm: { pipeline_funil, etapa_funil, especialidade_original, subespecialidade_queixa, medico_indicado, unidade, tags[], prioridade (P1–P4), temperatura, origem, paciente_novo_ou_antigo, precisa_humano_agora, motivo_alerta, proxima_acao, campos_faltantes[], nota_resumida }, acoes_internas[] }`.
 
 Invariantes: P1 ⇒ `precisa_humano_agora`; teleconsulta não vira `confirmado` antes do pagamento; NPS < 9 não pede Google.
+
+## Regras de resposta
+
+- Não perguntar `presencial ou teleconsulta` como complemento automático.
+- Perguntar modalidade só quando ela muda valor, unidade, pagamento ou confirmação.
+- Se o paciente perguntar endereço, metrô, estacionamento, dias, horários ou valores, responder só a informação pedida e parar.
