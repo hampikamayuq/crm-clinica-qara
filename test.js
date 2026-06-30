@@ -138,6 +138,23 @@ test("login bloqueia a UI antes de carregar o CRM", () => {
   assert.doesNotMatch(app, /window\.prompt\("Digite a ADMIN_API_KEY/, "UI nao deve pedir chave tecnica");
 });
 
+test("automacao tenta agente antes do bot de regras", () => {
+  const server = readFileSync(new URL("./server.js", import.meta.url), "utf8");
+  const app = readFileSync(new URL("./app.js", import.meta.url), "utf8");
+  const serverAgent = server.indexOf("const agentResults = await runAgentAutomation(inboundMessage, store);");
+  const serverBot = server.indexOf("return runBotAutomation(inboundMessage, store);");
+  const appAgent = app.indexOf("const agentResult = await runServerAgentForLead(lead, text);");
+  const appBot = app.indexOf("const result = agentResult || processBots(lead, text);");
+  assert.ok(serverAgent >= 0 && serverAgent < serverBot, "servidor deve tentar IA antes do bot");
+  assert.ok(appAgent >= 0 && appAgent < appBot, "simulador deve tentar IA antes do bot");
+});
+
+test("prompt da Tawany nao promete acesso direto a agenda", () => {
+  const prompt = readFileSync(new URL("./src/agent/agent-system-prompt-tawany.md", import.meta.url), "utf8");
+  assert.match(prompt, /não tem acesso direto à agenda real/);
+  assert.doesNotMatch(prompt, /com acesso ao CRM, à agenda,/);
+});
+
 test("score automatico classifica lead quente quando ha alta intencao", () => {
   const score = calculateLeadScore({
     phone: "+5521999999999",

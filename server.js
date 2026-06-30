@@ -273,7 +273,9 @@ const RUNTIME_CONTRACT = [
   "",
   "Você recebe um JSON de contexto (context) com careTeam, knowledge, isFirstMessage, coletado, faltando. Use SOMENTE esses dados — nunca invente valor, horario ou endereco.",
   "",
-  "APRESENTACAO DO MEDICO: nao escreva a apresentacao. Emita a action present_doctor com o id do medico (context.careTeam[].id: 'diego','miguel','diana','manuela','fabricio'; 'miguel-sp' para SP) assim que identificar o medico; o sistema insere o texto oficial (endereco, horarios, valor) uma unica vez por conversa, antes da sua mensagem. Na reply escreva so a continuacao. Nao repita para medico ja em agentState.presentedDoctors.",
+  "TOM: responda como conversa de WhatsApp. Use uma frase especifica sobre a mensagem do paciente, evite abertura pronta e peca so o proximo dado necessario.",
+  "",
+  "APRESENTACAO DO MEDICO: nao escreva a apresentacao longa. Emita a action present_doctor com o id do medico (context.careTeam[].id: 'diego','miguel','diana','manuela','fabricio'; 'miguel-sp' para SP) somente quando o paciente pedir dados do medico/valor/local ou quando ja estiver pronto para agendar com esse medico. O sistema insere o texto oficial uma unica vez por conversa, antes da sua mensagem. Na reply escreva so a continuacao. Nao repita para medico ja em agentState.presentedDoctors.",
   "",
   "VALOR: quando perguntarem o valor e o medico ja foi identificado, responda direto (todos exceto Dr. Miguel tem o mesmo valor presencial/online). So o Dr. Miguel varia por cidade (RJ R$650 / SP R$800) — nesse caso pergunte a cidade antes.",
   "",
@@ -334,11 +336,10 @@ const FEW_SHOT_EXAMPLES = [
     role: "assistant",
     content: JSON.stringify({
       reply:
-        "Perfeito, Marina! Vou te apresentar a Dra. Diana Stohmann, nossa especialista em tricologia. Qual periodo fica melhor pra voce: manha, tarde ou noite, e tem algum dia preferido?",
+        "Entendi, Marina. Queda de cabelo costuma ficar com a Dra. Diana, que atende tricologia. Para teleconsulta, qual periodo fica melhor pra voce?",
       actions: [
         { type: "set_tag", value: "tricologia" },
         { type: "set_field", value: "modalidade=teleconsulta" },
-        { type: "present_doctor", value: "diana" },
         { type: "set_stage", value: "Aguardando Horarios" },
       ],
       confidence: 0.85,
@@ -613,36 +614,14 @@ function describeAttachments(attachments = []) {
   return attachments.map((attachment) => `[${attachment.type || "anexo"} recebido]`).join(" ");
 }
 
-// Fluxo hibrido: o bot (fluxo "Leads novos") faz a abertura (saudacao + menu);
-// a partir da resposta do paciente, o agente Tawany assume a conversa.
+// Fluxo hibrido: a IA responde primeiro; o bot importado fica como fallback.
 async function runAutomations(inboundMessage, store) {
   // Classifica a mensagem do paciente (best-effort, nao bloqueia a resposta).
   if (classifyInboundToDb) classifyInboundToDb(inboundMessage).catch(() => {});
 
-  const conversation = getConversation(store, inboundMessage.channel, inboundMessage.externalId);
-  const agentState = conversation.agentState || {};
-  const outboundCount = (conversation.messages || []).filter((message) => message.direction === "outbound").length;
-  const isOpening = outboundCount === 0 && !agentState.botIntroDone;
-
-  // 1) Abertura da conversa -> bot de regras faz a saudacao/menu inicial.
-  if (isOpening) {
-    const botResults = await runBotAutomation(inboundMessage, store);
-    if (botResults.length) {
-      conversation.agentState = {
-        ...(conversation.agentState || {}),
-        botIntroDone: true,
-        botIntroAt: Date.now(),
-      };
-      return botResults;
-    }
-    // Sem regra de abertura correspondente: cai direto no agente.
-  }
-
-  // 2) Demais mensagens -> agente Tawany assume.
   const agentResults = await runAgentAutomation(inboundMessage, store);
   if (agentResults.length) return agentResults;
 
-  // 3) Fallback: se o agente estiver indisponivel, tenta o bot de regras.
   return runBotAutomation(inboundMessage, store);
 }
 
@@ -922,9 +901,8 @@ function injectDoctorPresentation(reply, actions, conversation) {
 
 // Modelos GPT-5 e o-series (reasoning) so aceitam temperature padrao (1).
 const supportsCustomTemperature = !/^(gpt-5|o1|o3|o4)/i.test(openAIModel);
-// Tarefa roteirizada nao precisa raciocinio profundo: "minimal" leva ~2s vs ~15s no padrao.
-// ponytail: env tunavel; suba para "low"/"medium" se a triagem perder qualidade.
-const reasoningEffort = process.env.OPENAI_REASONING_EFFORT || "minimal";
+// ponytail: env tunavel; suba para "medium" se a triagem perder qualidade.
+const reasoningEffort = process.env.OPENAI_REASONING_EFFORT || "low";
 
 async function callOpenAI(messages) {
   const body = {
@@ -932,7 +910,7 @@ async function callOpenAI(messages) {
     response_format: { type: "json_object" },
     messages,
   };
-  if (supportsCustomTemperature) body.temperature = 0.2;
+  if (supportsCustomTemperature) body.temperature = 0.4;
   else body.reasoning_effort = reasoningEffort;
 
   const response = await fetch("https://api.openai.com/v1/chat/completions", {

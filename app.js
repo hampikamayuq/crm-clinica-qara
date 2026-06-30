@@ -3969,27 +3969,9 @@ async function receivePatientMessage() {
   lead.messages.push({ from: "patient", text, time: nowTime() });
   input.value = "";
 
-  // Fluxo hibrido (espelha o servidor): abertura -> bot; depois -> agente Tawany.
-  const agentState = lead.agentState || {};
-  const hadOutbound = lead.messages.some((message) => message.from === "assistant");
-  const isOpening = !hadOutbound && !agentState.botIntroDone;
-
-  let result = null;
-  let via = "";
-
-  if (isOpening) {
-    result = processBots(lead, text);
-    if (result) {
-      lead.agentState = { ...agentState, botIntroDone: true, botIntroAt: Date.now() };
-      via = "Bot (abertura)";
-    }
-  }
-
-  if (!result) {
-    const agentResult = await runServerAgentForLead(lead, text);
-    result = agentResult || processBots(lead, text);
-    via = agentResult ? "Agente IA" : result ? "Bot" : "";
-  }
+  const agentResult = await runServerAgentForLead(lead, text);
+  const result = agentResult || processBots(lead, text);
+  const via = agentResult ? "Agente IA" : result ? "Bot" : "";
 
   addActivity(`${lead.name} enviou mensagem recebida.`, result ? "green" : "amber");
   persist();
