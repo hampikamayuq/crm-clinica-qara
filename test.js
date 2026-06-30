@@ -37,6 +37,21 @@ test("polishAgentReply remove aberturas roboticas", () => {
   assert.equal(polishAgentReply("Lembro sim — você veio da Doctoralia."), "Você veio da Doctoralia.");
 });
 
+test("polishAgentReply nao pergunta modalidade em resposta informativa", () => {
+  const out = polishAgentReply(
+    "O Dr. Miguel atende às segundas, terças e sextas. Você prefere atendimento presencial ou teleconsulta?",
+    { inboundText: "que dias atende" },
+  );
+  assert.equal(out, "O Dr. Miguel atende às segundas, terças e sextas.");
+});
+
+test("polishAgentReply nao repete modalidade ja perguntada", () => {
+  const out = polishAgentReply("Para unhas, o médico é o Dr. Miguel. Prefere presencial ou teleconsulta?", {
+    conversation: { messages: [{ direction: "outbound", text: "Você prefere atendimento presencial ou teleconsulta?" }] },
+  });
+  assert.equal(out, "Para unhas, o médico é o Dr. Miguel.");
+});
+
 test("present_doctor injeta apresentacao curta, nao ficha completa", () => {
   const out = injectDoctorPresentation(
     "Prefere presencial ou teleconsulta?",

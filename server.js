@@ -275,6 +275,8 @@ const RUNTIME_CONTRACT = [
   "",
   "TOM: responda como conversa de WhatsApp. Use uma frase especifica sobre a mensagem do paciente, evite abertura pronta e peca so o proximo dado necessario. Nao comece com 'Lembro sim', 'Certo', 'Entendi', 'Claro' ou menus de opcoes quando o paciente fez uma pergunta simples.",
   "",
+  "MODALIDADE: nao pergunte 'presencial ou teleconsulta' como complemento automatico. Pergunte modalidade so quando for indispensavel para confirmar/agendar e ainda nao tiver perguntado isso na conversa. Se o paciente perguntou endereco, metro, estacionamento, dias, horarios ou valores, responda essa informacao e pare.",
+  "",
   "APRESENTACAO DO MEDICO: nao escreva apresentacao longa. Se o paciente perguntar quem e o medico, responda em 1 frase curta. Emita a action present_doctor com o id do medico (context.careTeam[].id: 'diego','miguel','diana','manuela','fabricio'; 'miguel-sp' para SP) somente quando precisar identificar oficialmente o medico; o sistema insere uma frase curta uma unica vez. Nao despeje endereco, estacionamento, pagamento e valor junto, a menos que o paciente pergunte por isso.",
   "",
   "VALOR: quando perguntarem o valor e o medico ja foi identificado, responda direto (todos exceto Dr. Miguel tem o mesmo valor presencial/online). So o Dr. Miguel varia por cidade (RJ R$650 / SP R$800) — nesse caso pergunte a cidade antes.",
@@ -306,7 +308,7 @@ const FEW_SHOT_EXAMPLES = [
       example: true,
       isFirstMessage: true,
       coletado: {},
-      faltando: ["nome", "queixa", "modalidade", "periodo"],
+      faltando: ["nome", "queixa", "periodo"],
       lastMessage: "oi, queria marcar uma consulta pra umas manchas no rosto",
     }),
   },
@@ -314,7 +316,7 @@ const FEW_SHOT_EXAMPLES = [
     role: "assistant",
     content: JSON.stringify({
       reply:
-        "Ola! Sou a Tawany, da Clinica Qara. Me conta seu nome e se voce prefere atendimento presencial ou teleconsulta?",
+        "Ola! Sou a Tawany, da Clinica Qara. Me conta seu nome e qual queixa voce quer avaliar?",
       actions: [
         { type: "set_stage", value: "Novo Lead" },
         { type: "set_field", value: "queixa=manchas no rosto" },
@@ -328,7 +330,7 @@ const FEW_SHOT_EXAMPLES = [
       example: true,
       isFirstMessage: false,
       coletado: { nome: "Marina", queixa: "queda de cabelo" },
-      faltando: ["modalidade", "periodo"],
+      faltando: ["periodo"],
       lastMessage: "é queda de cabelo mesmo. pode ser teleconsulta",
     }),
   },
@@ -351,7 +353,7 @@ const FEW_SHOT_EXAMPLES = [
       example: true,
       isFirstMessage: false,
       coletado: { nome: "Carlos" },
-      faltando: ["modalidade", "periodo"],
+      faltando: ["periodo"],
       lastMessage: "isso aqui na minha unha é micose? que remedio eu tomo?",
     }),
   },
@@ -359,7 +361,7 @@ const FEW_SHOT_EXAMPLES = [
     role: "assistant",
     content: JSON.stringify({
       reply:
-        "Pra saber o que e e indicar o tratamento certo, precisa de uma avaliacao com o dermatologista — nao tem como dizer por aqui. O Dr. Miguel Ceccarelli e o nosso especialista em unhas. Prefere presencial ou teleconsulta, Carlos?",
+        "Pra saber o que e indicar o tratamento certo, precisa de uma avaliacao com o dermatologista — nao tem como dizer por aqui. O Dr. Miguel Ceccarelli e o especialista em unhas. Qual dia ou periodo costuma ser melhor pra voce, Carlos?",
       actions: [{ type: "set_tag", value: "unhas" }],
       confidence: 0.8,
     }),
@@ -939,7 +941,7 @@ async function runAgent(inboundMessage, store) {
   // Estado explicito: evita repetir saudacao e re-perguntar o que ja foi coletado.
   const collected = { ...(agentState.collected || {}) };
   if (conversation.name && !collected.nome) collected.nome = conversation.name;
-  const requiredFields = ["nome", "queixa", "modalidade", "periodo"];
+  const requiredFields = ["nome", "queixa", "periodo"];
   const faltando = requiredFields.filter((field) => !collected[field]);
   const isFirstMessage =
     (conversation.messages || []).filter((message) => message.direction === "outbound").length === 0;
@@ -993,7 +995,7 @@ async function runAgent(inboundMessage, store) {
     const parsed = parseAgentJson(completion);
     if (!parsed?.reply) return null;
     parsed.reply = guardAgentReply(parsed.reply, conversation);
-    parsed.reply = polishAgentReply(parsed.reply);
+    parsed.reply = polishAgentReply(parsed.reply, { conversation, inboundText: inboundMessage.text });
     parsed.reply = injectDoctorPresentation(parsed.reply, parsed.actions || [], conversation);
     applyAgentActions(conversation, parsed.actions || []);
     conversation.agentState = {
@@ -1036,12 +1038,47 @@ function guardAgentReply(reply, conversation = null) {
   return guarded;
 }
 
-function polishAgentReply(reply) {
-  const text = clean(reply).replace(
+function polishAgentReply(reply, options = {}) {
+  let text = clean(reply).replace(
     /^(lembro sim|certo|entendi|claro|perfeito|otimo|ótimo)[\s,!.\-—:]+/i,
     "",
   );
+  const shouldAvoidModality =
+    isInfoQuestion(options.inboundText) || wasModalityAlreadyAsked(options.conversation);
+  if (shouldAvoidModality) text = stripModalityQuestion(text);
   return text.replace(/^([a-záéíóúãõç])/, (letter) => letter.toUpperCase());
+}
+
+function isInfoQuestion(text) {
+  const t = normalizeText(text);
+  return [
+    "metro",
+    "endereco",
+    "onde fica",
+    "como chegar",
+    "estacionamento",
+    "que dias",
+    "dias atende",
+    "horario",
+    "horarios",
+    "valor",
+    "quanto custa",
+  ].some((term) => t.includes(term));
+}
+
+function wasModalityAlreadyAsked(conversation) {
+  return (conversation?.messages || []).some(
+    (message) =>
+      message.direction === "outbound" &&
+      /presencial\s+ou\s+(por\s+)?teleconsulta/i.test(message.text || ""),
+  );
+}
+
+function stripModalityQuestion(text) {
+  return clean(text)
+    .replace(/\s*(?:Voce|Você)?\s*(?:prefere|quer)\s+(?:atendimento\s+)?presencial\s+ou\s+(?:por\s+)?teleconsulta\??\s*$/i, "")
+    .replace(/\s*Prefere\s+(?:atendimento\s+)?presencial\s+ou\s+(?:por\s+)?teleconsulta\??\s*$/i, "")
+    .trim();
 }
 
 // Descobre o valor correto da consulta quando ha UM medico identificavel (nome no texto
