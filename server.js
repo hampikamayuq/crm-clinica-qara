@@ -234,6 +234,12 @@ const clinicKnowledge = {
     "Paciente exige diagnostico/prescricao",
     "Conflito de informacao (valor, agenda, local) que a agente nao consegue validar",
   ],
+  toneRules: [
+    "Nunca use traco longo (—) nas respostas.",
+    "Nunca enumere opcoes entre parenteses. Escreva: 'manha, tarde ou noite?' sem parenteses.",
+    "Ao receber comprovante de pagamento: confirme com 'Obrigada pelo comprovante!' e aguarde equipe. Nao volte a perguntar periodo ou horario.",
+    "Nunca comece resposta com: Recebi, Claro!, Perfeito!, Otimo!, Entendido!, Lembro sim, Certo, Entendi.",
+  ],
 };
 
 // Conjunto de valores validos (qualquer membro da equipe) para o guard anti-alucinacao.
@@ -334,7 +340,7 @@ const FEW_SHOT_EXAMPLES = [
     role: "assistant",
     content: JSON.stringify({
       reply:
-        "Teleconsulta funciona bem pra tricologia, sim. Vou ja te mostrar a Dra. Diana Stohmann, nossa especialista em cabelos. Qual turno fica melhor pra voce — manha, tarde ou noite?",
+        "Teleconsulta funciona bem pra tricologia, sim. Vou ja te mostrar a Dra. Diana Stohmann, nossa especialista em cabelos. Qual turno fica melhor: manha, tarde ou noite?",
       actions: [
         { type: "set_tag", value: "tricologia" },
         { type: "set_field", value: "modalidade=teleconsulta" },
@@ -358,7 +364,7 @@ const FEW_SHOT_EXAMPLES = [
     role: "assistant",
     content: JSON.stringify({
       reply:
-        "Pra saber o que e e indicar o tratamento certo, precisa de uma avaliacao com o dermatologista — nao tem como dizer por aqui. O Dr. Miguel Ceccarelli e o nosso especialista em unhas. Prefere presencial ou teleconsulta, Carlos?",
+        "Pra saber o que e e indicar o tratamento certo, precisa de avaliacao presencial com o dermatologista. O Dr. Miguel Ceccarelli e o nosso especialista em unhas. Prefere presencial ou teleconsulta, Carlos?",
       actions: [{ type: "set_tag", value: "unhas" }],
       confidence: 0.8,
     }),
@@ -399,12 +405,50 @@ const FEW_SHOT_EXAMPLES = [
     role: "assistant",
     content: JSON.stringify({
       reply:
-        "Em SP a unidade e no Itaim Bibi (R. Joaquim Floriano, 820). Estacionamento rotativo nas redondezas — sem vaga propria. Sabado manha certo, vou checar disponibilidade com a equipe.",
+        "Em SP a unidade e no Itaim Bibi (R. Joaquim Floriano, 820), com estacionamento rotativo nas redondezas. Sabado manha certo, vou checar disponibilidade com a equipe.",
       actions: [
         { type: "set_field", value: "periodo=sabado manha" },
         { type: "set_stage", value: "Aguardando Horarios" },
       ],
       confidence: 0.92,
+    }),
+  },
+  // Ex 6: comprovante de pagamento -> confirmar sem repergunta de periodo
+  {
+    role: "user",
+    content: JSON.stringify({
+      example: true,
+      isFirstMessage: false,
+      coletado: { nome: "Lucia", queixa: "queda de cabelo", modalidade: "teleconsulta", medico: "diana", periodo: "terca manha", horario: "10h" },
+      faltando: [],
+      lastMessage: "comprovante enviado 550",
+    }),
+  },
+  {
+    role: "assistant",
+    content: JSON.stringify({
+      reply: "Obrigada, Lucia! Assim que a equipe confirmar o pagamento, sua teleconsulta com a Dra. Diana na terca as 10h esta reservada. Te aviso aqui.",
+      actions: [{ type: "set_stage", value: "Aguardando Pagamento" }],
+      confidence: 0.95,
+    }),
+  },
+  // Ex 7: conflito de dia -> resposta natural sem parenteses
+  {
+    role: "user",
+    content: JSON.stringify({
+      example: true,
+      isFirstMessage: false,
+      coletado: { nome: "Pedro", queixa: "queda de cabelo", medico: "diana" },
+      faltando: ["periodo"],
+      lastMessage: "pode ser na sexta a tarde",
+    }),
+  },
+  {
+    role: "assistant",
+    content: JSON.stringify({
+      reply: "A Dra. Diana atende as tercas em Copacabana. Tem outro dia da semana que funciona pra voce?",
+      actions: [],
+      confidence: 0.9,
     }),
   },
 ];
@@ -668,117 +712,6 @@ function describeAttachments(attachments = []) {
   return attachments.map((attachment) => `[${attachment.type || "anexo"} recebido]`).join(" ");
 }
 
-// Responde perguntas frequentes de forma deterministica, sem chamar a IA.
-// Retorna a string de resposta ou null se a mensagem nao for uma FAQ reconhecida.
-function faqReply(text, agentState) {
-  const t = String(text || "")
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[̀-ͯ]/g, "");
-  const has = (kws) => kws.some((k) => t.includes(k));
-
-  // Resolve medico de contexto (estado ja coletado ou mencionado no texto).
-  const collected = agentState?.collected || {};
-  const presentedMedico = (agentState?.presentedDoctors || [])[0] || null;
-  const medicoId =
-    collected.medico ||
-    presentedMedico ||
-    (has(["diego", "galvez"]) ? "diego"
-      : has(["miguel", "ceccarelli"]) ? "miguel"
-      : has(["diana", "stohmann"]) ? "diana"
-      : has(["manuela", "pedretti"]) ? "manuela"
-      : has(["fabricio", "andrade"]) ? "fabricio"
-      : null);
-  const medico = medicoId ? careTeam.find((d) => d.id === medicoId) : null;
-
-  // Resolve unidade de contexto.
-  const unidade =
-    collected.unidade ||
-    (has(["sp", "sao paulo", "paulo", "itaim"]) ? "sp-itaim"
-      : has(["barra da tijuca", "barra"]) ? "barra"
-      : has(["copacabana", "copa"]) ? "copacabana"
-      : null);
-
-  // Convenio
-  if (has(["convenio", "plano de saude", "plano medico", "bradesco", "amil", "unimed", "sulamerica", "hapvida", "particular"])) {
-    return "A clínica é particular. Não atendemos por convênio direto, mas emitimos nota fiscal para você solicitar reembolso ao plano. Quer agendar mesmo assim?";
-  }
-
-  // Estacionamento
-  if (has(["estacionamento", "tem vaga", "vaga de garagem", "onde estacionar", "tem estacionamento", "pode estacionar", "garagem"])) {
-    if (unidade === "sp-itaim") {
-      return "Em SP (Itaim Bibi) o estacionamento é rotativo na rua.";
-    }
-    if (unidade === "barra") {
-      return "Na unidade da Barra da Tijuca o estacionamento é rotativo.";
-    }
-    // Copacabana (default RJ)
-    return "Em Copacabana temos vaga de garagem para pacientes, mas é preciso autorização prévia — me informe placa e modelo do carro (exceto moto). Nas unidades da Barra e SP o estacionamento é rotativo.";
-  }
-
-  // Pagamento / parcelamento
-  if (has(["aceita cartao", "pode parcelar", "aceita pix", "forma de pagamento", "como pagar", "aceita credito", "aceita debito", "parcelado", "cartao de credito", "pix", "dinheiro"])) {
-    if (collected.modalidade === "teleconsulta" || has(["teleconsulta", "online"])) {
-      return "Teleconsulta: pagamento antecipado via PIX ou cartão de crédito em até 6x sem juros. O link é enviado por aqui após a confirmação do horário.";
-    }
-    if (unidade === "sp-itaim" || has(["sp", "sao paulo", "itaim"])) {
-      return "Em SP aceitamos PIX, dinheiro e cartão de crédito em até 3x sem juros. Agendamentos em SP exigem sinal de 30% para confirmar.";
-    }
-    return "Aceitamos dinheiro, PIX, débito e cartão de crédito em até 6x sem juros. Pagamento na clínica no dia da consulta.";
-  }
-
-  // Valor da consulta
-  if (has(["qual o valor", "quanto custa", "quanto e a consulta", "valor da consulta", "preco da consulta", "custa a consulta", "valor consulta", "preco consulta"])) {
-    if (medico) {
-      const modalidade = collected.modalidade;
-      if (modalidade === "teleconsulta") {
-        const val = medico.values.teleconsulta;
-        return `A teleconsulta com ${medico.name} custa R$ ${val},00. Quer que eu verifique horários?`;
-      }
-      if (unidade === "sp-itaim" && medico.values.presencial_sp) {
-        return `A consulta com ${medico.name} em SP custa R$ ${medico.values.presencial_sp},00. Quer que eu verifique horários?`;
-      }
-      const val = medico.values.presencial || medico.values.presencial_rj;
-      return `A consulta com ${medico.name} custa R$ ${val},00. Quer que eu verifique horários?`;
-    }
-    return "Os valores variam por médico: Dr. Diego Galvez R$ 450, Dr. Miguel Ceccarelli R$ 650 (RJ) / R$ 800 (SP), Dra. Diana Stohmann R$ 550, Dra. Manuela Pedretti R$ 550 e Dr. Fabricio de Andrade R$ 550. Quer saber com qual médico você se encaixaria melhor?";
-  }
-
-  // Endereço / localização
-  if (has(["onde fica", "endereco", "como chegar", "qual o endereco", "localizacao", "fica onde", "qual endereco", "me passa o endereco", "me manda o endereco"])) {
-    if (unidade === "sp-itaim" || has(["sp", "sao paulo", "itaim"])) {
-      return `Nossa unidade em SP fica na ${locations.itaim}.`;
-    }
-    if (unidade === "barra" || has(["barra da tijuca", "barra"])) {
-      return `Nossa unidade na Barra fica na ${locations.barra}.`;
-    }
-    // Copacabana default
-    return `Nossa unidade principal fica na ${locations.copacabana}. Também temos unidades na Barra da Tijuca (RJ) e Itaim Bibi (SP).`;
-  }
-
-  // Horários de atendimento (padrões específicos para evitar falsos positivos)
-  if (has(["horario de atendimento", "que horas abre", "quando atende", "quais dias atende", "horarios de atendimento", "dias de atendimento", "funciona aos sabados", "atende sabado", "atende domingo"])) {
-    if (medico) {
-      const locs = medico.locations;
-      const linhas = locs.map((l) => `• ${l.local.split(",")[0]}: ${l.horarios}`).join("\n");
-      return `Horários de ${medico.name}:\n${linhas}`;
-    }
-    return "Os horários variam por médico e unidade. Me conta qual médico ou especialidade você busca e te passo os horários certos.";
-  }
-
-  // Retorno
-  if (has(["retorno gratuito", "prazo de retorno", "direito a retorno", "consulta de retorno", "tem retorno"])) {
-    return "Sim, toda consulta tem direito a retorno gratuito em até 30 dias.";
-  }
-
-  // Como funciona teleconsulta
-  if (has(["como funciona teleconsulta", "o que e teleconsulta", "como e a teleconsulta", "funciona a teleconsulta", "teleconsulta funciona"])) {
-    return "A teleconsulta é por videoconferência, com a mesma qualidade da consulta presencial. Você paga antecipado (PIX ou cartão) e recebe o link aqui no WhatsApp antes do horário.";
-  }
-
-  return null;
-}
-
 // Fluxo hibrido: o bot (fluxo "Leads novos") faz a abertura (saudacao + menu);
 // a partir da resposta do paciente, o agente Tawany assume a conversa.
 async function runAutomations(inboundMessage, store) {
@@ -804,22 +737,11 @@ async function runAutomations(inboundMessage, store) {
     // Sem regra de abertura correspondente: cai direto no agente.
   }
 
-  // 2) FAQ: responde perguntas comuns sem chamar a IA.
-  const faq = faqReply(inboundMessage.text, agentState);
-  if (faq) {
-    const result = await sendAndStoreMessage(
-      { channel: inboundMessage.channel, externalId: inboundMessage.externalId, text: faq },
-      store,
-      { automatedBy: "FAQ" },
-    );
-    return [result];
-  }
-
-  // 3) Demais mensagens -> agente Tawany assume.
+  // 2) Demais mensagens -> agente Tawany assume.
   const agentResults = await runAgentAutomation(inboundMessage, store);
   if (agentResults.length) return agentResults;
 
-  // 4) Fallback: se o agente estiver indisponivel, tenta o bot de regras.
+  // 3) Fallback: se o agente estiver indisponivel, tenta o bot de regras.
   return runBotAutomation(inboundMessage, store);
 }
 
