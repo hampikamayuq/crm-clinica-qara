@@ -8,6 +8,19 @@ import { emit } from "./workflow.service.js";
 
 const DIRECTIONS = new Set(["INBOUND", "OUTBOUND", "SYSTEM"]);
 
+// Auto-assign: recepcionista (SECRETARY) ativo menos carregado entre conversas abertas.
+// ponytail: 1 query + N counts por inbound novo; ok p/ clinica. Vira contador round-robin se o volume explodir.
+async function pickAutoAssignee() {
+  const candidates = await prisma.user.findMany({ where: { active: true, role: "SECRETARY" }, select: { id: true } });
+  if (!candidates.length) return null;
+  const loads = await Promise.all(candidates.map(async (u) => ({
+    id: u.id,
+    n: await prisma.conversation.count({ where: { assignedToId: u.id, status: { notIn: ["RESOLVED", "ARCHIVED"] } } }),
+  })));
+  loads.sort((a, b) => a.n - b.n);
+  return loads[0].id;
+}
+
 function normalizeDirection(direction) {
   const d = String(direction || "").toUpperCase();
   return DIRECTIONS.has(d) ? d : "SYSTEM";
@@ -41,8 +54,32 @@ export async function recordMessage({ channel, externalId, text, direction, prov
       metadata: { providerMessageId },
     });
   }
-  if (dir === "INBOUND") emit("message.received", { conversation, message });
+  if (dir === "INBOUND") {
+    if (!conversation.assignedToId) {
+      const assignee = await pickAutoAssignee();
+      if (assignee) {
+        await prisma.conversation.update({ where: { id: conversation.id }, data: { assignedToId: assignee } });
+        conversation.assignedToId = assignee;
+        await createActivity({ conversationId: conversation.id, type: "HANDOFF", title: "Atribuido automaticamente", description: null });
+      }
+    }
+    emit("message.received", { conversation, message });
+  }
   return { conversation, message, created: true };
+}
+
+export function extractAdministrativeData({ text = "", name = "", channel = "", externalId = "" } = {}) {
+  const data = {};
+  const fallbackName = cleanContactName(name, channel, externalId);
+  const textName = extractName(text);
+  if (textName || fallbackName) data.name = textName || fallbackName;
+  const phone = channel === "whatsapp" ? digitsOnly(externalId) : extractPhone(text);
+  if (phone) data.phone = phone;
+  const cpf = extractCpf(text);
+  if (cpf) data.cpf = cpf;
+  const birthDate = extractBirthDate(text);
+  if (birthDate) data.birthDate = birthDate;
+  return data;
 }
 
 export async function getInboxLegacyShape(limit = 200) {
@@ -87,7 +124,7 @@ export function listConversations(filters = {}) {
     orderBy: { lastMessageAt: "desc" },
     take: Math.min(Number(filters.limit) || 100, 500),
     include: {
-      lead: { select: { id: true, name: true, phone: true, stage: true } },
+      lead: { select: { id: true, name: true, phone: true, stage: true, patientId: true } },
       patient: { select: { id: true, name: true, phone: true } },
       assignedTo: { select: { id: true, name: true } },
       tags: { include: { tag: true } },
@@ -167,7 +204,7 @@ export async function postOutboundMessage(id, text, metadata = null) {
 export async function ensureLeadForConversation(conversationId, fallback = {}) {
   const conversation = await prisma.conversation.findUnique({
     where: { id: conversationId },
-    include: { messages: { orderBy: { createdAt: "desc" }, take: 10 } },
+    include: { lead: true, messages: { orderBy: { createdAt: "desc" }, take: 10 } },
   });
   if (!conversation) throw notFound("Conversa nao encontrada");
 
@@ -182,10 +219,16 @@ export async function ensureLeadForConversation(conversationId, fallback = {}) {
   }
 
   if (conversation.leadId) {
+    const contact = extractAdministrativeData({ text, name: fallback.name, channel: conversation.channel, externalId: conversation.externalId });
     const lead = await prisma.lead.update({
       where: { id: conversation.leadId },
-      data: { classification, nextAction: classification?.crm?.proxima_acao || undefined },
+      data: {
+        classification,
+        nextAction: classification?.crm?.proxima_acao || undefined,
+        ...leadContactPatch(conversation.lead || {}, contact),
+      },
     });
+    await syncPatientFromContact({ conversationId: conversation.id, lead, contact });
     await scoreLead(lead.id);
     if (classification && !conversation.classification) {
       await prisma.conversation.update({ where: { id: conversation.id }, data: { classification } });
@@ -202,6 +245,7 @@ export async function ensureLeadForConversation(conversationId, fallback = {}) {
       where: { id: lead.id },
       data: {
         classification,
+        ...leadContactPatch(lead, leadInput),
         interest: lead.interest || leadInput.interest,
         source: lead.source || leadInput.source,
         nextAction: lead.nextAction || leadInput.nextAction,
@@ -216,6 +260,7 @@ export async function ensureLeadForConversation(conversationId, fallback = {}) {
     where: { id: conversation.id },
     data: { leadId: lead.id, classification },
   });
+  await syncPatientFromContact({ conversationId: conversation.id, lead, contact: extractAdministrativeData({ text, name: fallback.name, channel: conversation.channel, externalId: conversation.externalId }) });
   return lead;
 }
 
@@ -242,10 +287,10 @@ export async function backfillConversationLeads(limit = 500) {
 
 function leadInputFromConversation(conversation, classification, fallback = {}) {
   const crm = classification?.crm || {};
-  const phone = conversation.channel === "whatsapp" ? conversation.externalId : null;
+  const contact = extractAdministrativeData({ text: fallback.text, name: fallback.name, channel: conversation.channel, externalId: conversation.externalId });
   return {
-    name: cleanLeadName(fallback.name, conversation.channel, conversation.externalId),
-    phone,
+    name: contact.name || cleanLeadName(fallback.name, conversation.channel, conversation.externalId),
+    phone: contact.phone || null,
     source: crm.origem && crm.origem !== "nao-identificada" ? crm.origem : conversation.channel,
     interest: crm.subespecialidade_queixa || crm.nota_resumida || fallback.text || "Atendimento",
     stage: stageFromCrm(crm.etapa_funil),
@@ -255,11 +300,95 @@ function leadInputFromConversation(conversation, classification, fallback = {}) 
   };
 }
 
+function leadContactPatch(current, contact) {
+  const data = {};
+  if (contact.phone && !current.phone) data.phone = contact.phone;
+  if (contact.name && shouldReplaceName(current.name, contact.name)) data.name = contact.name;
+  return data;
+}
+
+async function syncPatientFromContact({ conversationId, lead, contact }) {
+  if (!contact?.cpf && !contact?.birthDate && !lead?.patientId) return null;
+  const conversation = await prisma.conversation.findUnique({ where: { id: conversationId }, select: { patientId: true } });
+  let patientId = conversation?.patientId || lead?.patientId || null;
+  if (!patientId) {
+    const matches = [
+      ...(contact.cpf ? [{ cpf: contact.cpf }] : []),
+      ...(contact.phone ? [{ phone: contact.phone }] : []),
+    ];
+    const existing = matches.length ? await prisma.patient.findFirst({ where: { OR: matches }, select: { id: true } }) : null;
+    patientId = existing?.id || null;
+  }
+
+  const data = {
+    ...(contact.phone ? { phone: contact.phone } : {}),
+    ...(contact.cpf ? { cpf: contact.cpf } : {}),
+    ...(contact.birthDate ? { birthDate: contact.birthDate } : {}),
+    preferredChannel: "whatsapp",
+  };
+
+  const currentPatient = patientId ? await prisma.patient.findUnique({ where: { id: patientId } }) : null;
+  if (contact.name && shouldReplaceName(currentPatient?.name, contact.name)) data.name = contact.name;
+  const patient = currentPatient
+    ? await prisma.patient.update({ where: { id: currentPatient.id }, data })
+    : await prisma.patient.create({ data: { name: contact.name || lead.name, phone: contact.phone || lead.phone, ...data } });
+
+  await prisma.lead.update({ where: { id: lead.id }, data: { patientId: patient.id } });
+  await prisma.conversation.update({ where: { id: conversationId }, data: { patientId: patient.id } });
+  return patient;
+}
+
 function cleanLeadName(name, channel, externalId) {
   const value = String(name || "").trim();
   if (value && !value.toLowerCase().startsWith(`${channel} `)) return value;
   if (channel === "whatsapp") return `WhatsApp ${externalId}`;
   return `${channel || "Contato"} ${externalId || ""}`.trim();
+}
+
+function cleanContactName(name, channel, externalId) {
+  const value = String(name || "").trim();
+  if (!value || value === externalId) return "";
+  if (value.toLowerCase().startsWith(`${channel} `)) return "";
+  return value;
+}
+
+function shouldReplaceName(current, next) {
+  const value = String(current || "").trim().toLowerCase();
+  return Boolean(next) && (!value || value.startsWith("whatsapp ") || value.startsWith("lead ") || /^\d+$/.test(value));
+}
+
+function digitsOnly(value) {
+  return String(value || "").replace(/\D/g, "");
+}
+
+function extractCpf(text) {
+  const value = String(text || "");
+  const match = value.match(/\bcpf[:\s]*(\d{3}\.?\d{3}\.?\d{3}-?\d{2})\b/i) || value.match(/\b(\d{3}\.\d{3}\.\d{3}-\d{2})\b/);
+  const digits = digitsOnly(match?.[1]);
+  return digits.length === 11 ? digits : "";
+}
+
+function extractPhone(text) {
+  const match = String(text || "").match(/\b(?:whats(?:app)?|telefone|tel|celular|cel)[:\s]*(\+?\d[\d\s().-]{7,}\d)/i);
+  const digits = digitsOnly(match?.[1]);
+  return digits.length >= 8 ? digits : "";
+}
+
+function extractBirthDate(text) {
+  const match = String(text || "").match(/\b(?:data de nascimento|nascimento|nasc(?:i)?|dn)[:\s]*(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{2,4})\b/i);
+  if (!match) return null;
+  const day = Number(match[1]);
+  const month = Number(match[2]);
+  let year = Number(match[3]);
+  if (year < 100) year += year <= Number(String(new Date().getFullYear()).slice(-2)) ? 2000 : 1900;
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return null;
+  return date;
+}
+
+function extractName(text) {
+  const match = String(text || "").match(/\b(?:meu nome (?:e|é)|nome)[:\s]+([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ' -]{1,80})/i);
+  return match ? match[1].split(/\b(?:cpf|nasc|data de nascimento|telefone|tel|whats(?:app)?|celular|cel)\b/i)[0].trim().replace(/[.,;:]+$/, "") : "";
 }
 
 function stageFromCrm(value) {

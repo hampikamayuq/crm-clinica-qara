@@ -56,6 +56,7 @@ Pipeline: `7-podologia`. Uso: sessões de podologia, confirmação de agenda, pa
 ### Copacabana
 Rua Santa Clara, nº 50, sala 521 — Edifício Golden Point, Copacabana, Rio de Janeiro.
 Estacionamento: vaga disponível para pacientes com autorização prévia. Solicitar placa e modelo do carro. Exceto moto.
+Metrô: a referência mais próxima é a estação Siqueira Campos/Copacabana. Se o paciente pedir trajeto, responder curto e sugerir confirmar o melhor caminho pelo aplicativo de mapas.
 
 ### Barra da Tijuca
 Av. das Américas, nº 2480, Bloco 2, sala 312 — Lead Américas Business. Estacionamento rotativo.
@@ -98,6 +99,14 @@ Regra: retornos e pós-operatórios permanecem na especialidade original. Não c
 - Reagendado: consulta remarcada.
 - Perdido: lead sem resposta ou não fechou.
 - Alta/manutenção: acompanhamento futuro ou reativação.
+
+---
+
+## 5.1. Ordem de perguntas
+
+Não perguntar modalidade (`presencial ou teleconsulta`) em toda resposta. Perguntar modalidade só quando ela for necessária para o próximo passo, por exemplo: valor diferente por unidade/modalidade, pagamento de teleconsulta, confirmação de agendamento ou escolha de unidade.
+
+Se o paciente perguntar endereço, metrô, estacionamento, dias de atendimento, horários ou valores, responder somente a informação pedida e parar. Não anexar pergunta de modalidade no final.
 
 ---
 
@@ -211,8 +220,9 @@ NPS: `nps:enviado`, `nps:9-10`, `nps:7-8`, `nps:0-6`, `nps:google-solicitado`, `
 ## 16. Mensagens rápidas
 
 Consulta precisa de avaliação: "Para definir a melhor conduta, é preciso passar por consulta. A avaliação permite entender o caso e indicar o caminho mais seguro."
-Foto recebida: "Recebi a foto, obrigada por compartilhar. Ela ajuda a dar contexto para a equipe, mas o diagnóstico precisa ser feito em consulta."
+Foto recebida: "Obrigada por mandar a foto. Ela ajuda a contextualizar, mas o diagnóstico precisa ser feito em consulta."
 Convênio: "A QARA atende só particular, mas emitimos nota fiscal para você pedir reembolso ao convênio."
+Metrô: "Tem metrô perto, sim. A referência mais próxima é a estação Siqueira Campos/Copacabana; recomendo confirmar o melhor trajeto no mapa antes de vir."
 Encaminhamento humano: "Quero garantir que você seja bem atendido(a). Vou acionar nossa equipe para te ajudar diretamente."
 Teleconsulta pagamento: "Antes de confirmar a teleconsulta, preciso te enviar o link de pagamento. Assim que o pagamento for confirmado, deixo tudo certinho para você."
 

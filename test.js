@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { buildWhatsAppMessagePayload, guardAgentReply, parseAgentJson, previewOutboundText } from "./server.js";
+import { buildWhatsAppMessagePayload, guardAgentReply, injectDoctorPresentation, parseAgentJson, polishAgentReply, previewOutboundText } from "./server.js";
+import { faqReply } from "./src/server/services/agent-faq.service.js";
 import { calculateLeadScore, temperatureFromScore } from "./src/server/services/lead-score.service.js";
 
 // Money path: a agente NUNCA pode mandar um valor que nao seja de careTeam.
@@ -30,6 +31,50 @@ test("guardAgentReply nao altera texto sem dinheiro", () => {
 test("parseAgentJson extrai JSON cercado por ruido", () => {
   const parsed = parseAgentJson('blá blá {"reply":"oi","confidence":0.9} fim');
   assert.equal(parsed.reply, "oi");
+});
+
+test("polishAgentReply remove aberturas roboticas", () => {
+  assert.equal(polishAgentReply("Certo — o que você quer ver antes?"), "O que você quer ver antes?");
+  assert.equal(polishAgentReply("Lembro sim — você veio da Doctoralia."), "Você veio da Doctoralia.");
+});
+
+test("polishAgentReply nao pergunta modalidade em resposta informativa", () => {
+  const out = polishAgentReply(
+    "O Dr. Miguel atende às segundas, terças e sextas. Você prefere atendimento presencial ou teleconsulta?",
+    { inboundText: "que dias atende" },
+  );
+  assert.equal(out, "O Dr. Miguel atende às segundas, terças e sextas.");
+});
+
+test("polishAgentReply nao repete modalidade ja perguntada", () => {
+  const out = polishAgentReply("Para unhas, o médico é o Dr. Miguel. Prefere presencial ou teleconsulta?", {
+    conversation: { messages: [{ direction: "outbound", text: "Você prefere atendimento presencial ou teleconsulta?" }] },
+  });
+  assert.equal(out, "Para unhas, o médico é o Dr. Miguel.");
+});
+
+test("present_doctor injeta apresentacao curta, nao ficha completa", () => {
+  const out = injectDoctorPresentation(
+    "Prefere presencial ou teleconsulta?",
+    [{ type: "present_doctor", value: "miguel" }],
+    { agentState: {} },
+  );
+  assert.match(out, /Dr\. Miguel Ceccarelli/);
+  assert.doesNotMatch(out, /Estacionamento|Valor da Consulta|Formas de Pagamento/);
+});
+
+test("faqReply responde horarios por medico sem chamar IA", () => {
+  const out = faqReply("que dias o Dr. Miguel atende?", {}, {
+    locations: {},
+    careTeam: [{
+      id: "miguel",
+      name: "Dr. Miguel Ceccarelli",
+      locations: [{ local: "Copacabana, RJ", horarios: "Segundas 14h-20h" }],
+      values: { presencial_rj: 650, teleconsulta: 650 },
+    }],
+  });
+  assert.match(out, /Dr\. Miguel Ceccarelli/);
+  assert.match(out, /Segundas 14h-20h/);
 });
 
 test("schema Prisma mantem o escopo CRM completo", () => {
@@ -136,6 +181,23 @@ test("login bloqueia a UI antes de carregar o CRM", () => {
   assert.ok(server.includes('/api/auth/login') && server.includes("invalid_credentials"), "server.js deve expor login por usuario/senha");
   assert.ok(router.includes("passwordHash") === false, "rotas publicas nao devem selecionar passwordHash");
   assert.doesNotMatch(app, /window\.prompt\("Digite a ADMIN_API_KEY/, "UI nao deve pedir chave tecnica");
+});
+
+test("automacao tenta agente antes do bot de regras", () => {
+  const server = readFileSync(new URL("./server.js", import.meta.url), "utf8");
+  const app = readFileSync(new URL("./app.js", import.meta.url), "utf8");
+  const serverAgent = server.indexOf("const agentResults = await runAgentAutomation(inboundMessage, store);");
+  const serverBot = server.indexOf("return runBotAutomation(inboundMessage, store);");
+  const appAgent = app.indexOf("const agentResult = await runServerAgentForLead(lead, text);");
+  const appBot = app.indexOf("const result = agentResult || processBots(lead, text);");
+  assert.ok(serverAgent >= 0 && serverAgent < serverBot, "servidor deve tentar IA antes do bot");
+  assert.ok(appAgent >= 0 && appAgent < appBot, "simulador deve tentar IA antes do bot");
+});
+
+test("prompt da Tawany nao promete acesso direto a agenda", () => {
+  const prompt = readFileSync(new URL("./src/agent/agent-system-prompt-tawany.md", import.meta.url), "utf8");
+  assert.match(prompt, /não tem acesso direto à agenda real/);
+  assert.doesNotMatch(prompt, /com acesso ao CRM, à agenda,/);
 });
 
 test("score automatico classifica lead quente quando ha alta intencao", () => {

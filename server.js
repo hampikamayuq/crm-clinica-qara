@@ -3,6 +3,7 @@ import { chmodSync, createReadStream, existsSync, mkdirSync, readFileSync, renam
 import { createServer } from "node:http";
 import { extname, isAbsolute, join, normalize, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { faqReply } from "./src/server/services/agent-faq.service.js";
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 loadEnv();
@@ -279,7 +280,11 @@ const RUNTIME_CONTRACT = [
   "",
   "Você recebe um JSON de contexto (context) com careTeam, knowledge, isFirstMessage, coletado, faltando. Use SOMENTE esses dados — nunca invente valor, horario ou endereco.",
   "",
-  "APRESENTACAO DO MEDICO: nao escreva a apresentacao. Emita a action present_doctor com o id do medico (context.careTeam[].id: 'diego','miguel','diana','manuela','fabricio'; 'miguel-sp' para SP) assim que identificar o medico; o sistema insere o texto oficial (endereco, horarios, valor) uma unica vez por conversa, antes da sua mensagem. Na reply escreva so a continuacao. Nao repita para medico ja em agentState.presentedDoctors.",
+  "TOM: responda como conversa de WhatsApp. Use uma frase especifica sobre a mensagem do paciente, evite abertura pronta e peca so o proximo dado necessario. Nao comece com 'Lembro sim', 'Certo', 'Entendi', 'Claro' ou menus de opcoes quando o paciente fez uma pergunta simples.",
+  "",
+  "MODALIDADE: nao pergunte 'presencial ou teleconsulta' como complemento automatico. Pergunte modalidade so quando for indispensavel para confirmar/agendar e ainda nao tiver perguntado isso na conversa. Se o paciente perguntou endereco, metro, estacionamento, dias, horarios ou valores, responda essa informacao e pare.",
+  "",
+  "APRESENTACAO DO MEDICO: nao escreva apresentacao longa. Se o paciente perguntar quem e o medico, responda em 1 frase curta. Emita a action present_doctor com o id do medico (context.careTeam[].id: 'diego','miguel','diana','manuela','fabricio'; 'miguel-sp' para SP) somente quando precisar identificar oficialmente o medico; o sistema insere uma frase curta uma unica vez. Nao despeje endereco, estacionamento, pagamento e valor junto, a menos que o paciente pergunte por isso.",
   "",
   "VALOR: quando perguntarem o valor e o medico ja foi identificado, responda direto (todos exceto Dr. Miguel tem o mesmo valor presencial/online). So o Dr. Miguel varia por cidade (RJ R$650 / SP R$800) — nesse caso pergunte a cidade antes.",
   "",
@@ -310,7 +315,7 @@ const FEW_SHOT_EXAMPLES = [
       example: true,
       isFirstMessage: true,
       coletado: {},
-      faltando: ["nome", "queixa", "modalidade", "periodo"],
+      faltando: ["nome", "queixa", "periodo"],
       lastMessage: "oi, queria marcar uma consulta pra umas manchas no rosto",
     }),
   },
@@ -318,7 +323,7 @@ const FEW_SHOT_EXAMPLES = [
     role: "assistant",
     content: JSON.stringify({
       reply:
-        "Ola! Sou a Tawany, da Clinica Qara. Me conta seu nome e se voce prefere atendimento presencial ou teleconsulta?",
+        "Ola! Sou a Tawany, da Clinica Qara. Me conta seu nome e qual queixa voce quer avaliar?",
       actions: [
         { type: "set_stage", value: "Novo Lead" },
         { type: "set_field", value: "queixa=manchas no rosto" },
@@ -332,7 +337,7 @@ const FEW_SHOT_EXAMPLES = [
       example: true,
       isFirstMessage: false,
       coletado: { nome: "Marina", queixa: "queda de cabelo" },
-      faltando: ["modalidade", "periodo"],
+      faltando: ["periodo"],
       lastMessage: "é queda de cabelo mesmo. pode ser teleconsulta",
     }),
   },
@@ -340,11 +345,10 @@ const FEW_SHOT_EXAMPLES = [
     role: "assistant",
     content: JSON.stringify({
       reply:
-        "Teleconsulta funciona bem pra tricologia, sim. Vou ja te mostrar a Dra. Diana Stohmann, nossa especialista em cabelos. Qual turno fica melhor: manha, tarde ou noite?",
+        "Queda de cabelo fica com a Dra. Diana, que atende tricologia. Para teleconsulta, qual periodo fica melhor pra voce?",
       actions: [
         { type: "set_tag", value: "tricologia" },
         { type: "set_field", value: "modalidade=teleconsulta" },
-        { type: "present_doctor", value: "diana" },
         { type: "set_stage", value: "Aguardando Horarios" },
       ],
       confidence: 0.85,
@@ -356,7 +360,7 @@ const FEW_SHOT_EXAMPLES = [
       example: true,
       isFirstMessage: false,
       coletado: { nome: "Carlos" },
-      faltando: ["modalidade", "periodo"],
+      faltando: ["periodo"],
       lastMessage: "isso aqui na minha unha é micose? que remedio eu tomo?",
     }),
   },
@@ -364,7 +368,7 @@ const FEW_SHOT_EXAMPLES = [
     role: "assistant",
     content: JSON.stringify({
       reply:
-        "Pra saber o que e e indicar o tratamento certo, precisa de avaliacao presencial com o dermatologista. O Dr. Miguel Ceccarelli e o nosso especialista em unhas. Prefere presencial ou teleconsulta, Carlos?",
+        "Pra saber o que e e indicar o tratamento certo, precisa de avaliacao com o dermatologista. O Dr. Miguel Ceccarelli e o especialista em unhas. Qual dia ou periodo costuma ser melhor pra voce, Carlos?",
       actions: [{ type: "set_tag", value: "unhas" }],
       confidence: 0.8,
     }),
@@ -453,12 +457,21 @@ const FEW_SHOT_EXAMPLES = [
   },
 ];
 
+const doctorShortIntros = {
+  diego: "Para cirurgia dermatologica, o medico e o Dr. Diego Galvez.",
+  miguel: "Para unhas, o medico e o Dr. Miguel Ceccarelli, dermatologista especialista em doencas de unha.",
+  diana: "Para cabelo e couro cabeludo, a medica e a Dra. Diana Stohmann, especialista em tricologia.",
+  manuela: "Para psoriase, dermatite atopica e hidradenite, a medica e a Dra. Manuela Pedretti Cabral.",
+  fabricio: "Para dermatologia infantil, o medico e o Dr. Fabricio de Andrade.",
+};
+
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
   ".js": "application/javascript; charset=utf-8",
   ".json": "application/json; charset=utf-8",
   ".svg": "image/svg+xml",
+  ".webp": "image/webp",
   ".png": "image/png",
   ".jpg": "image/jpeg",
   ".jpeg": "image/jpeg",
@@ -569,7 +582,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   });
 }
 
-export { guardAgentReply, resolveDoctorValue, parseAgentJson, buildWhatsAppMessagePayload, previewOutboundText };
+export { guardAgentReply, injectDoctorPresentation, polishAgentReply, resolveDoctorValue, parseAgentJson, buildWhatsAppMessagePayload, previewOutboundText };
 
 async function login(req, res) {
   if (!loginWithPassword) return json(res, 503, { ok: false, error: "login_unavailable" });
@@ -712,36 +725,28 @@ function describeAttachments(attachments = []) {
   return attachments.map((attachment) => `[${attachment.type || "anexo"} recebido]`).join(" ");
 }
 
-// Fluxo hibrido: o bot (fluxo "Leads novos") faz a abertura (saudacao + menu);
-// a partir da resposta do paciente, o agente Tawany assume a conversa.
+// Fluxo hibrido: FAQ e IA respondem primeiro; o bot importado fica como fallback.
 async function runAutomations(inboundMessage, store) {
   // Classifica a mensagem do paciente (best-effort, nao bloqueia a resposta).
   if (classifyInboundToDb) classifyInboundToDb(inboundMessage).catch(() => {});
 
   const conversation = getConversation(store, inboundMessage.channel, inboundMessage.externalId);
   const agentState = conversation.agentState || {};
-  const outboundCount = (conversation.messages || []).filter((message) => message.direction === "outbound").length;
-  const isOpening = outboundCount === 0 && !agentState.botIntroDone;
 
-  // 1) Abertura da conversa -> bot de regras faz a saudacao/menu inicial.
-  if (isOpening) {
-    const botResults = await runBotAutomation(inboundMessage, store);
-    if (botResults.length) {
-      conversation.agentState = {
-        ...(conversation.agentState || {}),
-        botIntroDone: true,
-        botIntroAt: Date.now(),
-      };
-      return botResults;
-    }
-    // Sem regra de abertura correspondente: cai direto no agente.
+  const faq = faqReply(inboundMessage.text, agentState, { careTeam, locations });
+  if (faq) {
+    const result = await sendAndStoreMessage(
+      { channel: inboundMessage.channel, externalId: inboundMessage.externalId, text: faq },
+      store,
+      { automatedBy: "FAQ" },
+    );
+    return [result];
   }
 
-  // 2) Demais mensagens -> agente Tawany assume.
   const agentResults = await runAgentAutomation(inboundMessage, store);
   if (agentResults.length) return agentResults;
 
-  // 3) Fallback: se o agente estiver indisponivel, tenta o bot de regras.
+
   return runBotAutomation(inboundMessage, store);
 }
 
@@ -872,7 +877,7 @@ async function runAgent(inboundMessage, store) {
   // Estado explicito: evita repetir saudacao e re-perguntar o que ja foi coletado.
   const collected = { ...(agentState.collected || {}) };
   if (conversation.name && !collected.nome) collected.nome = conversation.name;
-  const requiredFields = ["nome", "queixa", "modalidade", "periodo"];
+  const requiredFields = ["nome", "queixa", "periodo"];
   const faltando = requiredFields.filter((field) => !collected[field]);
   const isFirstMessage =
     (conversation.messages || []).filter((message) => message.direction === "outbound").length === 0;
@@ -926,6 +931,7 @@ async function runAgent(inboundMessage, store) {
     const parsed = parseAgentJson(completion);
     if (!parsed?.reply) return null;
     parsed.reply = guardAgentReply(parsed.reply, conversation);
+    parsed.reply = polishAgentReply(parsed.reply, { conversation, inboundText: inboundMessage.text });
     parsed.reply = injectDoctorPresentation(parsed.reply, parsed.actions || [], conversation);
     applyAgentActions(conversation, parsed.actions || []);
     conversation.agentState = {
@@ -968,6 +974,49 @@ function guardAgentReply(reply, conversation = null) {
   return guarded;
 }
 
+function polishAgentReply(reply, options = {}) {
+  let text = clean(reply).replace(
+    /^(lembro sim|certo|entendi|claro|perfeito|otimo|ótimo)[\s,!.\-—:]+/i,
+    "",
+  );
+  const shouldAvoidModality =
+    isInfoQuestion(options.inboundText) || wasModalityAlreadyAsked(options.conversation);
+  if (shouldAvoidModality) text = stripModalityQuestion(text);
+  return text.replace(/^([a-záéíóúãõç])/, (letter) => letter.toUpperCase());
+}
+
+function isInfoQuestion(text) {
+  const t = normalizeText(text);
+  return [
+    "metro",
+    "endereco",
+    "onde fica",
+    "como chegar",
+    "estacionamento",
+    "que dias",
+    "dias atende",
+    "horario",
+    "horarios",
+    "valor",
+    "quanto custa",
+  ].some((term) => t.includes(term));
+}
+
+function wasModalityAlreadyAsked(conversation) {
+  return (conversation?.messages || []).some(
+    (message) =>
+      message.direction === "outbound" &&
+      /presencial\s+ou\s+(por\s+)?teleconsulta/i.test(message.text || ""),
+  );
+}
+
+function stripModalityQuestion(text) {
+  return clean(text)
+    .replace(/\s*(?:Voce|Você)?\s*(?:prefere|quer)\s+(?:atendimento\s+)?presencial\s+ou\s+(?:por\s+)?teleconsulta\??\s*$/i, "")
+    .replace(/\s*Prefere\s+(?:atendimento\s+)?presencial\s+ou\s+(?:por\s+)?teleconsulta\??\s*$/i, "")
+    .trim();
+}
+
 // Descobre o valor correto da consulta quando ha UM medico identificavel (nome no texto
 // ou tag no estado) e ele tem um unico valor. Caso ambiguo (ex.: Dr. Miguel RJ/SP), retorna null.
 function resolveDoctorValue(text, conversation) {
@@ -991,8 +1040,7 @@ function resolveDoctorValue(text, conversation) {
   return distinct.length === 1 ? distinct[0] : null;
 }
 
-// Injeta o texto OFICIAL de apresentacao do medico quando o agente emite a action
-// present_doctor, uma unica vez por conversa. O texto nao trafega no contexto do modelo.
+// Injeta uma apresentacao curta do medico quando o agente emite present_doctor.
 function injectDoctorPresentation(reply, actions, conversation) {
   const action = (actions || []).find((item) => clean(item.type) === "present_doctor");
   if (!action) return reply;
@@ -1005,7 +1053,7 @@ function injectDoctorPresentation(reply, actions, conversation) {
   if (!member) return reply;
 
   const useSp = member.id === "miguel" && wantsSp && member.presentationSp;
-  const text = useSp ? member.presentationSp : member.presentation;
+  const text = doctorShortIntros[useSp ? "miguel" : member.id];
   if (!text) return reply;
 
   const state = conversation.agentState || {};
@@ -1016,15 +1064,14 @@ function injectDoctorPresentation(reply, actions, conversation) {
   presented.add(key);
   conversation.agentState = { ...state, presentedDoctors: [...presented] };
 
+  if (normalizeText(reply).includes(normalizeText(member.name))) return reply;
   return reply ? `${text}\n\n${reply}` : text;
 }
 
 // Modelos GPT-5 e o-series (reasoning) nao aceitam temperature customizada: usam reasoning_effort.
 // gpt-4.1 e gpt-4o usam temperature normalmente.
 const supportsCustomTemperature = !/^(gpt-5|o1|o3|o4)/i.test(openAIModel);
-// Tarefa roteirizada nao precisa raciocinio profundo: "minimal" leva ~2s vs ~15s no padrao.
-// ponytail: env tunavel; suba para "low"/"medium" se a triagem perder qualidade.
-// "low" equivale a aproximadamente temperature 0.7 em modelos reasoning — mais natural que "minimal".
+// ponytail: env tunavel; suba para "medium" se a triagem perder qualidade.
 const reasoningEffort = process.env.OPENAI_REASONING_EFFORT || "low";
 
 async function callOpenAI(messages) {

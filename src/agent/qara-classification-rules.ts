@@ -71,7 +71,8 @@ export const P1_KEYWORDS = [
 export const ADMIN_KEYWORDS = [
   "endereço", "endereco", "valor", "preço", "preco", "convênio", "convenio",
   "reembolso", "nota fiscal", "horário de funcionamento", "horario de funcionamento",
-  "cancelar", "remarcar", "comprovante",
+  "cancelar", "remarcar", "comprovante", "metrô", "metro", "estacionamento",
+  "vaga de garagem", "garagem",
 ];
 
 export const REQUIRED_RULES = [

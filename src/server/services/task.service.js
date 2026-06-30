@@ -12,7 +12,16 @@ export function listTasks(filters = {}) {
     where.dueAt = { lt: new Date() };
     where.status = { in: ["OPEN", "IN_PROGRESS"] };
   }
-  return prisma.task.findMany({ where, orderBy: [{ dueAt: "asc" }, { createdAt: "desc" }], take: Math.min(Number(filters.limit) || 200, 1000) });
+  return prisma.task.findMany({
+    where,
+    orderBy: [{ dueAt: "asc" }, { createdAt: "desc" }],
+    take: Math.min(Number(filters.limit) || 200, 1000),
+    include: {
+      assignedTo: { select: { id: true, name: true } },
+      lead: { select: { id: true, name: true, phone: true, patientId: true } },
+      patient: { select: { id: true, name: true, phone: true } },
+    },
+  });
 }
 
 export async function createTask(input) {

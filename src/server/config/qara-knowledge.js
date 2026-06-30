@@ -56,7 +56,8 @@ export const P1_KEYWORDS = [
 export const ONCO_KEYWORDS = ["pinta", "nevo", "melanoma", "cancer de pele", "cbc", "cec", "lesao que cresce", "cresceu", "mudou", "sangrou", "nao cicatriza"];
 
 export const ADMIN_RULES = [
-  { sub: "Endereço", tag: "endereco", kw: ["endereco", "onde fica", "localizacao", "como chegar"] },
+  { sub: "Endereço", tag: "endereco", kw: ["endereco", "onde fica", "localizacao", "como chegar", "metro", "metrô"] },
+  { sub: "Estacionamento", tag: "estacionamento", kw: ["estacionamento", "tem vaga", "vaga de garagem", "garagem"] },
   { sub: "Valor", tag: "valor", kw: ["valor", "preco", "quanto custa", "quanto e"] },
   { sub: "Horários", tag: "horarios", kw: ["horario de funcionamento", "que horas", "funciona ate"] },
   { sub: "Reembolso", tag: "reembolso", kw: ["reembolso"] },
@@ -81,7 +82,7 @@ export const NPS_RULES = {
   googleMinScore: 9,
 };
 
-// Fixtures (conversation-examples.md). Esquema novo: tudo dentro de `crm`.
+// Fixtures do classificador. Esquema novo: tudo dentro de `crm`.
 export const EXAMPLES = [
   { message: "Oi, quero marcar uma consulta, tenho problema nas unhas.", crm: { pipeline_funil: "1-unhas", etapa_funil: "qualificado", medico_indicado: "Dr. Miguel Ceccarelli", prioridade: "P3", temperatura: "Quente", precisa_humano_agora: false, tags: ["pipeline:unhas", "medico:miguel", "temp:quente"] } },
   { message: "Vocês aceitam Bradesco?", crm: { pipeline_funil: "8-administrativo", prioridade: "P4", temperatura: "Morno", precisa_humano_agora: false, tags: ["alerta:plano-nao-aceito", "temp:morno"] } },
@@ -91,4 +92,5 @@ export const EXAMPLES = [
   { message: "Fiquei esperando 40 minutos e ninguém me atendeu.", crm: { pipeline_funil: "8-administrativo", prioridade: "P2", temperatura: "Morno", precisa_humano_agora: true, tags: ["alerta:reclamacao", "alerta:precisa-humano"] } },
   { message: "Minha filha de 5 anos está com manchas na pele.", crm: { pipeline_funil: "5-dermatopediatria", medico_indicado: "Dr. Fabrício de Andrade", prioridade: "P3", temperatura: "Quente", precisa_humano_agora: false, tags: ["pipeline:dermatopediatria", "medico:fabricio", "alerta:crianca"] } },
   { message: "Qual o endereço da clínica?", crm: { pipeline_funil: "8-administrativo", etapa_funil: "novo-lead", prioridade: "P4", temperatura: "Frio", precisa_humano_agora: false, tags: ["temp:frio"] } },
+  { message: "Tem metrô perto?", crm: { pipeline_funil: "8-administrativo", etapa_funil: "novo-lead", subespecialidade_queixa: "Endereço", prioridade: "P4", temperatura: "Frio", precisa_humano_agora: false, tags: ["pipeline:administrativo", "temp:frio"] } },
 ];

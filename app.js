@@ -59,7 +59,7 @@ const pageTitles = {
   tarefas: ["Tarefas", "Follow-ups e pendencias da equipe"],
   operations: ["Operacao", "Briefing, follow-ups e importacao"],
   agenda: ["Agenda", "Horarios e confirmacoes"],
-  financeiro: ["Financeiro", "Recebimentos sem prontuario"],
+  financeiro: ["Financeiro", "Recebimentos e controle financeiro"],
   channels: ["Canais", "WhatsApp API e Instagram"],
   bots: ["Bots", "Automacoes de atendimento"],
   config: ["Dados", "Exportacao e ajustes locais"],
@@ -84,6 +84,7 @@ let ui = {
   users: null,
   team: { users: null, editId: "" },
   quickReplies: null,
+  qr: { list: null, editId: "" },
   waMode: "text",
   selectedVisualBotId: "",
   funnelView: "kanban",
@@ -124,6 +125,142 @@ function bindEvents() {
       render();
     }
   });
+  document.addEventListener("keydown", (event) => {
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+      event.preventDefault();
+      if (appStarted) toggleCommandPalette();
+    }
+  });
+  // Navegacao do popup de resposta rapida (/atalho) no inbox.
+  document.addEventListener("keydown", (event) => {
+    if (!slashState || event.target !== slashState.textarea) return;
+    if (event.key === "ArrowDown") { event.preventDefault(); slashState.active = Math.min(slashState.active + 1, slashState.items.length - 1); paintSlash(); }
+    else if (event.key === "ArrowUp") { event.preventDefault(); slashState.active = Math.max(slashState.active - 1, 0); paintSlash(); }
+    else if (event.key === "Enter" || event.key === "Tab") { event.preventDefault(); expandSlash(); }
+    else if (event.key === "Escape") { event.preventDefault(); closeSlash(); }
+  });
+  document.addEventListener("mousedown", (event) => {
+    if (slashState && !event.target.closest("#qr-slash")) closeSlash();
+  });
+}
+
+// --- Command palette (Cmd/Ctrl+K) -----------------------------------------
+// Navegacao herda o role-gating da sidebar: comandos vem dos .nav-item ja na tela.
+function commandList() {
+  const nav = [...document.querySelectorAll(".nav-item[data-view]")].map((el) => ({
+    label: `Ir para ${el.textContent.trim()}`,
+    run: () => goToView(el.dataset.view),
+  }));
+  const actions = [
+    { label: "Novo lead", run: openLeadModal },
+    { label: "Nova tarefa", run: () => openTaskModal() },
+    { label: "Novo paciente", run: () => openPatientModal() },
+    { label: "Novo lancamento financeiro", run: openTransactionModal },
+    { label: "Sincronizar canais", run: syncExternalConversations },
+    { label: "Exportar dados", run: exportData },
+  ];
+  return [...nav, ...actions];
+}
+
+function goToView(view) {
+  if (!pageTitles[view]) return;
+  ui.view = view;
+  window.location.hash = view;
+  closeMenu();
+  render();
+}
+
+function toggleCommandPalette() {
+  document.querySelector("#cmdk-root") ? closeCommandPalette() : openCommandPalette();
+}
+
+function closeCommandPalette() {
+  document.querySelector("#cmdk-root")?.remove();
+}
+
+function openCommandPalette() {
+  const all = commandList();
+  let active = 0;
+  const root = document.createElement("div");
+  root.id = "cmdk-root";
+  root.innerHTML = `
+    <div class="cmdk-backdrop" data-cmdk="close"></div>
+    <div class="cmdk-panel" role="dialog" aria-label="Comandos">
+      <input class="cmdk-input" type="text" placeholder="Buscar acao ou pagina..." autocomplete="off" aria-label="Buscar comando" />
+      <ul class="cmdk-list" role="listbox"></ul>
+    </div>`;
+  document.body.appendChild(root);
+
+  const input = root.querySelector(".cmdk-input");
+  const list = root.querySelector(".cmdk-list");
+
+  let entityHits = []; // comandos de paciente (busca async)
+  let searchToken = 0;
+  let debounce = null;
+
+  const staticMatches = (q) => {
+    const t = q.trim().toLowerCase();
+    if (!t) return all;
+    return all.filter((c) => c.label.toLowerCase().includes(t));
+  };
+  let current = staticMatches("");
+  const recompute = () => { current = [...staticMatches(input.value), ...entityHits]; };
+
+  const paint = () => {
+    if (active >= current.length) active = Math.max(0, current.length - 1);
+    list.innerHTML = current.length
+      ? current.map((c, i) => `<li class="cmdk-item${i === active ? " active" : ""}" role="option" data-i="${i}">${escapeHtml(c.label)}</li>`).join("")
+      : `<li class="cmdk-empty">Nada encontrado</li>`;
+  };
+  paint();
+
+  // Busca paciente por nome/telefone (token evita corrida entre requisicoes).
+  const searchEntities = (q) => {
+    const token = ++searchToken;
+    apiFetch(`/api/patients?search=${encodeURIComponent(q)}`, {}, false)
+      .then((r) => (r.ok ? r.json() : { data: [] }))
+      .then(({ data }) => {
+        if (token !== searchToken || !document.querySelector("#cmdk-root")) return;
+        entityHits = (data || []).slice(0, 6).map((p) => ({
+          label: `Paciente: ${p.name}${p.phone ? ` · ${p.phone}` : ""}`,
+          run: () => { goToView("pacientes"); selectPatient(p.id); },
+        }));
+        recompute();
+        paint();
+      })
+      .catch(() => {});
+  };
+
+  const runActive = () => {
+    const cmd = current[active];
+    if (!cmd) return;
+    closeCommandPalette();
+    cmd.run();
+  };
+
+  input.addEventListener("input", () => {
+    entityHits = [];
+    recompute();
+    active = 0;
+    paint();
+    clearTimeout(debounce);
+    const q = input.value.trim();
+    if (q.length >= 2) debounce = setTimeout(() => searchEntities(q), 180);
+  });
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "ArrowDown") { event.preventDefault(); active = Math.min(active + 1, current.length - 1); paint(); }
+    else if (event.key === "ArrowUp") { event.preventDefault(); active = Math.max(active - 1, 0); paint(); }
+    else if (event.key === "Enter") { event.preventDefault(); runActive(); }
+    else if (event.key === "Escape") { event.preventDefault(); closeCommandPalette(); }
+  });
+  list.addEventListener("click", (event) => {
+    const item = event.target.closest(".cmdk-item");
+    if (!item) return;
+    active = Number(item.dataset.i);
+    runActive();
+  });
+  root.querySelector("[data-cmdk=close]").addEventListener("click", closeCommandPalette);
+  input.focus();
 }
 
 function startApp() {
@@ -158,11 +295,7 @@ function renderLogin(message = "") {
   root.innerHTML = `
     <section class="login-panel" aria-label="Entrar no CliniQara">
       <div class="brand">
-        <div class="brand-mark" aria-hidden="true">Q</div>
-        <div>
-          <div class="brand-name">CliniQara</div>
-          <div class="brand-subtitle">CRM sem prontuario</div>
-        </div>
+        <img class="brand-logo" src="./assets/qara-logo.webp" alt="Clinica Qara" />
       </div>
       <div>
         <h1>Entrar no sistema</h1>
@@ -241,6 +374,8 @@ function handleClick(event) {
   if (action === "logout") return logout();
   if (action === "team-edit") { ui.team.editId = id; return renderConfig(); }
   if (action === "team-new") { ui.team.editId = ""; return renderConfig(); }
+  if (action === "qr-edit") { ui.qr.editId = id; return renderConfig(); }
+  if (action === "qr-new") { ui.qr.editId = ""; return renderConfig(); }
   if (action === "new-lead") return openLeadModal();
   if (action === "close-modal") return closeModal();
   if (action === "export-data") return exportData();
@@ -249,6 +384,13 @@ function handleClick(event) {
   if (action === "reset-data") return resetData();
   if (action === "select-lead") return selectLead(id);
   if (action === "select-patient") return selectPatient(id);
+  if (action === "open-linked-conversation") {
+    return openLinkedConversation({
+      conversationId: id,
+      leadId: actionEl.dataset.leadId || "",
+      patientId: actionEl.dataset.patientId || "",
+    });
+  }
   if (action === "new-patient") return openPatientModal();
   if (action === "patient-edit") return openPatientModal(id);
   if (action === "new-task") return openTaskModal();
@@ -342,6 +484,7 @@ function handleSubmit(event) {
   if (form.dataset.form === "transaction") createTransaction(data);
   if (form.dataset.form === "settings") saveSettings(data);
   if (form.dataset.form === "team-user") saveTeamUser(data);
+  if (form.dataset.form === "quick-reply") saveQuickReply(data);
   if (form.dataset.form === "inbox-task") createInboxTask(data);
   if (form.dataset.form === "patient") savePatient(data);
   if (form.dataset.form === "task") saveTask(data);
@@ -411,6 +554,7 @@ function handleInput(event) {
   if (target.matches("#agent-test-input")) ui.agentTest.draft = target.value;
   if (target.matches("#agent-test-name")) ui.agentTest.name = target.value;
   if (target.matches("#global-search")) runGlobalSearch(target.value);
+  if (target.matches("#inbox-reply-input")) handleReplySlash(target);
 }
 
 // Busca global client-side (leads). Atualiza so o dropdown, sem re-render da view.
@@ -855,7 +999,7 @@ function renderOpsHero({ dbLeads, dbAppointments, patientCount, pending, pipelin
         <div class="status-row">
           <span class="chip primary">${escapeHtml(syncLabel)}</span>
           <span class="chip green">LGPD administrativo</span>
-          <span class="chip amber">sem prontuario</span>
+          <span class="chip amber">atendimento administrativo</span>
         </div>
       </div>
       <div class="ops-scoreboard">
@@ -902,6 +1046,7 @@ function renderModuleCard(title, value, note, icon) {
 
 // Inbox DB-first: le conversas + mensagens + classificacao do Postgres (/api/inbox).
 function renderInbox() {
+  closeSlash();
   const box = ui.inbox;
   if (box.list === null) {
     if (!box.loading) loadInboxData();
@@ -1036,6 +1181,24 @@ async function selectInboxConversation(id) {
   if (window.innerWidth <= 900) ui.inboxMobileView = "chat";
   await Promise.all([loadInboxMessages(id), loadInboxActivities(id)]);
   renderInbox();
+}
+
+async function openLinkedConversation({ conversationId = "", leadId = "", patientId = "" } = {}) {
+  ui.view = "inbox";
+  window.location.hash = "inbox";
+  ui.inbox.list = null;
+  ui.inbox.selectedId = conversationId || null;
+  render();
+  await loadInboxData();
+  const conversation =
+    (ui.inbox.list || []).find(
+      (c) =>
+        (conversationId && c.id === conversationId) ||
+        (leadId && c.lead?.id === leadId) ||
+        (patientId && (c.patient?.id === patientId || c.lead?.patientId === patientId)),
+    ) || null;
+  if (!conversation) return toast("Conversa nao encontrada para este registro.");
+  await selectInboxConversation(conversation.id);
 }
 
 // Recarrega a lista do banco preservando a conversa selecionada (apos uma escrita).
@@ -1178,7 +1341,8 @@ function replyPlaceholderForMode() {
   if (ui.waMode === "buttons") return "Texto principal acima dos botões";
   if (ui.waMode === "list") return "Texto principal acima da lista";
   if (ui.waMode === "template") return "Opcional: anotação interna. O envio usa o nome do modelo";
-  return "Responder (registra no banco e envia pelo canal quando configurado)";
+  const hint = (ui.quickReplies || []).length ? " — digite / para respostas rápidas" : "";
+  return `Responder (registra no banco e envia pelo canal quando configurado)${hint}`;
 }
 
 function renderDbConversationSide(c) {
@@ -1241,7 +1405,7 @@ function renderDbConversationSide(c) {
         <div class="side-label">Notas & atividades</div>
         <div class="activity-list">${(ui.inbox.activities || []).map(renderActivityItem).join("") || '<p class="muted">Sem atividades.</p>'}</div>
         <div class="note-add">
-          <textarea id="inbox-note-input" placeholder="Nota interna"></textarea>
+          <textarea id="inbox-note-input" placeholder="Nota interna — markdown: **negrito**, *itálico*, - listas, [link](url)"></textarea>
           <button class="secondary-button" type="button" data-action="inbox-add-note" data-id="${c.id}">Adicionar nota</button>
         </div>
       </div>
@@ -1254,12 +1418,16 @@ function renderDbConversationSide(c) {
     </div>`;
 }
 
+// renderMarkdown, matchSlash, substituteVars vivem em markdown.js (fonte unica
+// browser+testes), expostas no window pela ponte <script type="module"> do index.html.
+
 function renderActivityItem(a) {
   const time = a.createdAt ? new Date(a.createdAt).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "";
   const title = a.title || a.type || "Atividade";
+  const body = a.type === "NOTE" ? renderMarkdown(a.description) : escapeHtml(a.description);
   return `<div class="activity-item">
     <div class="activity-head"><span class="activity-type">${escapeHtml(title)}</span><time>${escapeHtml(time)}</time></div>
-    ${a.description ? `<div class="activity-desc">${escapeHtml(a.description)}</div>` : ""}
+    ${a.description ? `<div class="activity-desc">${body}</div>` : ""}
   </div>`;
 }
 
@@ -1490,8 +1658,72 @@ function insertQuickReply(id) {
   const qr = (ui.quickReplies || []).find((q) => q.id === id);
   const input = document.querySelector("#inbox-reply-input");
   if (!qr || !input) return;
-  input.value = input.value ? `${input.value}\n${qr.content}` : qr.content;
+  input.value = input.value ? `${input.value}\n${substituteVars(qr.content, currentConvName())}` : substituteVars(qr.content, currentConvName());
   input.focus();
+}
+
+// --- Resposta rapida por "/atalho" (estilo Chatwoot) -----------------------
+let slashState = null; // { items, active, start, end, textarea }
+
+
+function currentConvName() {
+  const c = (ui.inbox.list || []).find((x) => x.id === ui.inbox.selectedId);
+  return c ? inboxConvName(c) : "";
+}
+
+function handleReplySlash(textarea) {
+  const replies = ui.quickReplies || [];
+  if (!replies.length) return closeSlash();
+  const hit = matchSlash(textarea.value.slice(0, textarea.selectionStart));
+  if (!hit) return closeSlash();
+  const q = hit.query.toLowerCase();
+  const items = replies.filter((r) => (r.shortcut || "").toLowerCase().includes(q) || (r.title || "").toLowerCase().includes(q));
+  if (!items.length) return closeSlash();
+  slashState = { items, active: 0, start: hit.start, end: textarea.selectionStart, textarea };
+  paintSlash();
+}
+
+function paintSlash() {
+  if (!slashState) return;
+  let pop = document.querySelector("#qr-slash");
+  if (!pop) {
+    pop = document.createElement("ul");
+    pop.id = "qr-slash";
+    pop.className = "qr-slash";
+    document.body.appendChild(pop);
+    pop.addEventListener("mousedown", (event) => {
+      const li = event.target.closest("[data-i]");
+      if (!li) return;
+      event.preventDefault();
+      slashState.active = Number(li.dataset.i);
+      expandSlash();
+    });
+  }
+  const { items, active, textarea } = slashState;
+  pop.innerHTML = items
+    .map((r, i) => `<li class="qr-slash-item${i === active ? " active" : ""}" data-i="${i}"><span class="qr-slash-sc">/${escapeHtml((r.shortcut || "").replace(/^\/+/, ""))}</span><span class="qr-slash-title">${escapeHtml(r.title || "")}</span></li>`)
+    .join("");
+  const rect = textarea.getBoundingClientRect();
+  pop.style.left = `${rect.left}px`;
+  pop.style.width = `${rect.width}px`;
+  pop.style.top = `${rect.top}px`;
+}
+
+function expandSlash() {
+  if (!slashState) return;
+  const { items, active, start, end, textarea } = slashState;
+  const content = substituteVars(items[active].content || "", currentConvName());
+  const v = textarea.value;
+  textarea.value = v.slice(0, start) + content + v.slice(end);
+  const pos = start + content.length;
+  closeSlash();
+  textarea.focus();
+  textarea.setSelectionRange(pos, pos);
+}
+
+function closeSlash() {
+  slashState = null;
+  document.querySelector("#qr-slash")?.remove();
 }
 
 function openInboxTaskModal(conversationId) {
@@ -1589,7 +1821,7 @@ function renderPatientsTable(list) {
     <div class="data-table-wrap">
       <table class="data-table">
         <thead>
-          <tr><th>Nome</th><th>Telefone</th><th>E-mail</th><th>CPF</th><th>LGPD</th><th>Criado</th></tr>
+          <tr><th>Nome</th><th>Telefone</th><th>E-mail</th><th>CPF</th><th>LGPD</th><th>Criado</th><th></th></tr>
         </thead>
         <tbody>
           ${list
@@ -1602,6 +1834,7 @@ function renderPatientsTable(list) {
               <td class="muted">${escapeHtml(p.cpf || "-")}</td>
               <td>${p.lgpdConsent ? '<span class="chip green">Sim</span>' : '<span class="chip">Não</span>'}</td>
               <td class="muted">${escapeHtml(formatDate(p.createdAt))}</td>
+              <td><button class="link-button" type="button" data-action="open-linked-conversation" data-patient-id="${escapeHtml(p.id)}">Conversa →</button></td>
             </tr>`,
             )
             .join("")}
@@ -1620,6 +1853,7 @@ function renderPatientDetail(p) {
     <div class="lead-summary">
       <h3>${escapeHtml(p.name)}</h3>
       <div class="button-row" style="margin-top:8px">
+        <button class="secondary-button" type="button" data-action="open-linked-conversation" data-patient-id="${escapeHtml(p.id)}">Abrir conversa</button>
         <button class="secondary-button" type="button" data-action="patient-edit" data-id="${p.id}">Editar</button>
       </div>
       <div class="side-block">
@@ -1879,7 +2113,7 @@ function renderTriageView() {
             .map((lead) => {
               const k = leadClassification(lead);
               return `<tr>
-                <td><div class="cell-main"><span class="avatar sm">${initials(lead.name)}</span>${escapeHtml(lead.name)}</div></td>
+                <td><div class="cell-main"><span class="avatar sm">${initials(lead.name)}</span><button class="link-button" type="button" data-action="open-linked-conversation" data-lead-id="${escapeHtml(lead.id)}">${escapeHtml(lead.name)}</button></div></td>
                 <td>${escapeHtml(PIPELINE_LABEL[k.pipeline_funil] || k.pipeline_funil || "-")}</td>
                 <td><span class="chip ${PRIORITY_TONE[k.prioridade] || "primary"}">${escapeHtml(k.prioridade || "-")}</span>${k.precisa_humano_agora ? ' <span class="chip red">Humano</span>' : ""}</td>
                 <td><span class="chip ${TEMP_TONE[k.temperatura] || "amber"}">${escapeHtml(k.temperatura || "-")}</span></td>
@@ -1931,8 +2165,8 @@ function renderClinicalCard(c) {
   const k = leadClassification(c);
   const name = c.name;
   return `
-    <article class="lead-card" data-action="select-lead" data-id="${c.id}">
-      <div class="cell-main"><span class="avatar sm">${initials(name)}</span><strong>${escapeHtml(name)}</strong></div>
+    <article class="lead-card">
+      <div class="cell-main"><span class="avatar sm">${initials(name)}</span><button class="link-button" type="button" data-action="open-linked-conversation" data-lead-id="${escapeHtml(c.id)}">${escapeHtml(name)}</button></div>
       <div class="card-chips">
         <span class="chip ${PRIORITY_TONE[k.prioridade] || "primary"}">${escapeHtml(k.prioridade || "-")}</span>
         <span class="chip ${TEMP_TONE[k.temperatura] || "amber"}">${escapeHtml(k.temperatura || "-")}</span>
@@ -1941,6 +2175,9 @@ function renderClinicalCard(c) {
       </div>
       ${k.medico_indicado && k.medico_indicado !== "A definir" ? `<p class="muted">${escapeHtml(k.medico_indicado)}</p>` : ""}
       ${k.proxima_acao ? `<p class="card-next">→ ${escapeHtml(k.proxima_acao)}</p>` : ""}
+      <div class="mini-actions">
+        <button type="button" data-action="open-linked-conversation" data-lead-id="${escapeHtml(c.id)}">Abrir conversa</button>
+      </div>
     </article>`;
 }
 
@@ -1959,14 +2196,14 @@ function renderLeadTable(leads) {
             .map(
               (lead) => `
             <tr>
-              <td><div class="cell-main"><span class="avatar sm">${initials(lead.name)}</span>${escapeHtml(lead.name)}</div></td>
+              <td><div class="cell-main"><span class="avatar sm">${initials(lead.name)}</span><button class="link-button" type="button" data-action="open-linked-conversation" data-lead-id="${escapeHtml(lead.id)}">${escapeHtml(lead.name)}</button></div></td>
               <td class="muted">${escapeHtml(lead.phone || "-")}</td>
               <td>${escapeHtml(lead.source || "-")}</td>
               <td class="muted">${escapeHtml(lead.interest || "-")}</td>
               <td><span class="chip ${stageTone(lead.stage)}">${escapeHtml(stageLabel(lead.stage))}</span></td>
               <td class="num"><span class="chip ${scoreTone(lead.score)}">${lead.score || 0}</span></td>
               <td class="num"><strong>${formatMoney(lead.value)}</strong></td>
-              <td><button class="link-button" type="button" data-action="select-lead" data-id="${lead.id}">Detalhe →</button></td>
+              <td><button class="link-button" type="button" data-action="open-linked-conversation" data-lead-id="${escapeHtml(lead.id)}">Conversa →</button></td>
             </tr>`,
             )
             .join("")}
@@ -2879,6 +3116,7 @@ function deleteVisualBot(botId) {
 
 function renderConfig() {
   if (isAdmin() && ui.team.users === null) loadTeamUsers();
+  if (ui.qr.list === null) loadQuickRepliesAdmin();
   appRoot().innerHTML = `
     <div class="config-grid">
       <section class="panel">
@@ -2931,6 +3169,8 @@ function renderConfig() {
       </section>
 
       ${renderTeamPanel()}
+
+      ${renderQuickReplyPanel()}
 
       <section class="panel">
         <div class="section-header">
@@ -3082,6 +3322,97 @@ async function saveTeamUser(data) {
   }
 }
 
+// Gestao de respostas rapidas. Auth (nao admin): recepcao gerencia as proprias.
+// Sem rota DELETE no backend -> "remover" = desativar (active=false).
+function renderQuickReplyPanel() {
+  const list = ui.qr.list || [];
+  const editing = list.find((q) => q.id === ui.qr.editId);
+  const rows = list.length
+    ? list.map((q) => `
+        <tr>
+          <td><code>/${escapeHtml((q.shortcut || "").replace(/^\/+/, ""))}</code></td>
+          <td>${escapeHtml(q.title || "—")}</td>
+          <td class="muted">${escapeHtml((q.content || "").slice(0, 60))}${(q.content || "").length > 60 ? "…" : ""}</td>
+          <td><span class="chip ${q.active ? "green" : ""}">${q.active ? "Ativa" : "Inativa"}</span></td>
+          <td><button class="link-button" type="button" data-action="qr-edit" data-id="${q.id}">Editar</button></td>
+        </tr>`).join("")
+    : `<tr><td colspan="5" class="muted">${ui.qr.list === null ? "Carregando..." : "Nenhuma resposta rápida."}</td></tr>`;
+  return `
+    <section class="panel">
+      <div class="section-header">
+        <h2>Respostas rápidas</h2>
+        <span class="chip primary">${list.length}</span>
+      </div>
+      <div class="data-table-wrap">
+        <table class="data-table">
+          <thead><tr><th>Atalho</th><th>Título</th><th>Conteúdo</th><th>Status</th><th></th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+      <form data-form="quick-reply" class="form-grid" style="margin-top:16px">
+        <input type="hidden" name="id" value="${editing?.id || ""}" />
+        <div class="field">
+          <label for="qr-shortcut">Atalho (após /)</label>
+          <input id="qr-shortcut" name="shortcut" required value="${escapeHtml(editing?.shortcut || "")}" placeholder="ex.: agenda" />
+        </div>
+        <div class="field">
+          <label for="qr-title">Título</label>
+          <input id="qr-title" name="title" value="${escapeHtml(editing?.title || "")}" placeholder="opcional, usa o atalho" />
+        </div>
+        <div class="field full">
+          <label for="qr-content">Conteúdo</label>
+          <textarea id="qr-content" name="content" required placeholder="Texto enviado ao paciente. Variáveis: {{nome}}, {{primeiro_nome}}">${escapeHtml(editing?.content || "")}</textarea>
+        </div>
+        <div class="field">
+          <label><input type="checkbox" name="active" ${editing ? (editing.active ? "checked" : "") : "checked"} /> Ativa</label>
+        </div>
+        <div class="modal-actions full">
+          ${editing ? `<button class="secondary-button" type="button" data-action="qr-new">Cancelar edição</button>` : ""}
+          <button class="primary-button" type="submit">${editing ? "Salvar resposta" : "Adicionar resposta"}</button>
+        </div>
+      </form>
+    </section>`;
+}
+
+async function loadQuickRepliesAdmin() {
+  if (ui.qr.list === null) ui.qr.list = [];
+  try {
+    const response = await apiFetch("/api/quick-replies", {}, false);
+    if (response.ok) ui.qr.list = (await response.json()).data || [];
+  } catch {
+    /* mantem lista atual */
+  } finally {
+    if (ui.view === "config") renderConfig();
+  }
+}
+
+async function saveQuickReply(data) {
+  const id = clean(data.id || "");
+  const body = {
+    shortcut: clean(data.shortcut || "").replace(/^\//, ""),
+    title: clean(data.title || ""),
+    content: data.content || "",
+    active: data.active === "on" || data.active === true,
+  };
+  if (!body.shortcut || !clean(body.content)) return toast("Informe atalho e conteúdo.");
+  try {
+    const response = await apiFetch(id ? `/api/quick-replies/${id}` : "/api/quick-replies", {
+      method: id ? "PATCH" : "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }, false);
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) return toast(payload.error?.message || "Falha ao salvar resposta.");
+    toast(id ? "Resposta atualizada." : "Resposta adicionada.");
+    ui.qr.editId = "";
+    ui.qr.list = null;
+    ui.quickReplies = null; // invalida dropdown/slash do inbox
+    loadQuickRepliesAdmin();
+  } catch {
+    toast("Falha ao salvar resposta.");
+  }
+}
+
 function renderLeadSummary(lead) {
   const appt = state.appointments.find((item) => item.leadId === lead.id && item.status !== "Cancelado");
   const txs = state.transactions.filter((tx) => tx.leadId === lead.id);
@@ -3171,36 +3502,37 @@ function renderTaskFilters() {
 
 function renderTasksTable(list) {
   if (!list.length) return emptyState("Nenhuma tarefa para os filtros atuais.");
-  const userName = (uid) => (ui.users || []).find((u) => u.id === uid)?.name || "—";
   const now = Date.now();
   return `
-    <div class="data-table-wrap">
-      <table class="data-table">
-        <thead>
-          <tr><th>Título</th><th>Responsável</th><th>Vínculo</th><th>Vencimento</th><th>Status</th><th></th></tr>
-        </thead>
-        <tbody>
-          ${list
-            .map((t) => {
-              const open = t.status !== "DONE" && t.status !== "CANCELED";
-              const overdue = open && t.dueAt && new Date(t.dueAt).getTime() < now;
-              const vinc = t.leadId ? "Lead" : t.patientId ? "Paciente" : "—";
-              return `
-              <tr>
-                <td><strong>${escapeHtml(t.title)}</strong>${t.description ? `<div class="muted">${escapeHtml(t.description)}</div>` : ""}</td>
-                <td class="muted">${escapeHtml(userName(t.assignedToId))}</td>
-                <td class="muted">${vinc}</td>
-                <td class="muted"${overdue ? ' style="color:var(--danger,#dc2626);font-weight:600"' : ""}>${t.dueAt ? escapeHtml(formatDate(t.dueAt)) : "—"}</td>
-                <td><span class="chip ${TASK_STATUS_TONE[t.status] || ""}">${escapeHtml(TASK_STATUS_LABEL[t.status] || t.status)}</span></td>
-                <td>
-                  ${open ? `<button class="link-button" type="button" data-action="task-complete" data-id="${t.id}">Concluir</button>` : ""}
-                  <button class="link-button" type="button" data-action="task-edit" data-id="${t.id}">Editar</button>
-                </td>
-              </tr>`;
-            })
-            .join("")}
-        </tbody>
-      </table>
+    <div class="task-list">
+      ${list
+        .map((t) => {
+          const open = t.status !== "DONE" && t.status !== "CANCELED";
+          const overdue = open && t.dueAt && new Date(t.dueAt).getTime() < now;
+          const linked = t.lead || t.patient || null;
+          const linkKind = t.lead ? "Lead" : t.patient ? "Paciente" : "Sem vinculo";
+          return `
+            <article class="task-item${overdue ? " overdue" : ""}">
+              <div class="task-main">
+                <div class="task-title-row">
+                  <strong>${escapeHtml(t.title)}</strong>
+                  <span class="chip ${TASK_STATUS_TONE[t.status] || ""}">${escapeHtml(TASK_STATUS_LABEL[t.status] || t.status)}</span>
+                </div>
+                ${t.description ? `<p>${escapeHtml(t.description)}</p>` : ""}
+                <div class="task-meta">
+                  <span>${escapeHtml(linkKind)}${linked ? `: ${escapeHtml(linked.name || linked.phone || "-")}` : ""}</span>
+                  <span>Responsavel: ${escapeHtml(t.assignedTo?.name || "—")}</span>
+                  <span class="${overdue ? "task-overdue" : ""}">Vence: ${t.dueAt ? escapeHtml(formatDate(t.dueAt)) : "—"}</span>
+                </div>
+              </div>
+              <div class="task-actions">
+                ${linked ? `<button class="secondary-button" type="button" data-action="open-linked-conversation" data-lead-id="${escapeHtml(t.leadId || "")}" data-patient-id="${escapeHtml(t.patientId || "")}">Abrir conversa</button>` : ""}
+                ${open ? `<button class="ghost-button" type="button" data-action="task-complete" data-id="${t.id}">Concluir</button>` : ""}
+                <button class="ghost-button" type="button" data-action="task-edit" data-id="${t.id}">Editar</button>
+              </div>
+            </article>`;
+        })
+        .join("")}
     </div>`;
 }
 
@@ -3348,7 +3680,7 @@ function renderFunnelCard(l) {
     <article class="lead-card" draggable="true" data-lead-card data-id="${l.id}">
       <div class="lead-card-title">
         <div>
-          <h3>${escapeHtml(l.name)}</h3>
+          <h3><button class="link-button" type="button" data-action="open-linked-conversation" data-lead-id="${escapeHtml(l.id)}">${escapeHtml(l.name)}</button></h3>
           <p>${escapeHtml(l.interest || "—")} · ${escapeHtml(l.source || "—")}</p>
         </div>
         <div class="card-chips">
@@ -3358,6 +3690,7 @@ function renderFunnelCard(l) {
       </div>
       ${l.nextAction ? `<p>${escapeHtml(l.nextAction)}${l.nextActionAt ? ` · ${formatDate(l.nextActionAt)}` : ""}</p>` : ""}
       <div class="mini-actions">
+        <button type="button" data-action="open-linked-conversation" data-lead-id="${escapeHtml(l.id)}">Abrir conversa</button>
         <select data-funnel-select data-id="${l.id}" aria-label="Mover lead">
           ${LEAD_STAGES.map((s) => `<option value="${s}" ${s === l.stage ? "selected" : ""}>${escapeHtml(LEAD_STAGE_LABEL[s])}</option>`).join("")}
         </select>
@@ -3969,27 +4302,9 @@ async function receivePatientMessage() {
   lead.messages.push({ from: "patient", text, time: nowTime() });
   input.value = "";
 
-  // Fluxo hibrido (espelha o servidor): abertura -> bot; depois -> agente Tawany.
-  const agentState = lead.agentState || {};
-  const hadOutbound = lead.messages.some((message) => message.from === "assistant");
-  const isOpening = !hadOutbound && !agentState.botIntroDone;
-
-  let result = null;
-  let via = "";
-
-  if (isOpening) {
-    result = processBots(lead, text);
-    if (result) {
-      lead.agentState = { ...agentState, botIntroDone: true, botIntroAt: Date.now() };
-      via = "Bot (abertura)";
-    }
-  }
-
-  if (!result) {
-    const agentResult = await runServerAgentForLead(lead, text);
-    result = agentResult || processBots(lead, text);
-    via = agentResult ? "Agente IA" : result ? "Bot" : "";
-  }
+  const agentResult = await runServerAgentForLead(lead, text);
+  const result = agentResult || processBots(lead, text);
+  const via = agentResult ? "Agente IA" : result ? "Bot" : "";
 
   addActivity(`${lead.name} enviou mensagem recebida.`, result ? "green" : "amber");
   persist();

@@ -14,6 +14,12 @@ function pick(obj, keys) {
 export function listPatients(filters = {}) {
   const where = {};
   if (filters.phone) where.phone = { contains: filters.phone };
+  if (filters.search) {
+    where.OR = [
+      { name: { contains: filters.search, mode: "insensitive" } },
+      { phone: { contains: filters.search } },
+    ];
+  }
   return prisma.patient.findMany({ where, orderBy: { createdAt: "desc" }, take: Math.min(Number(filters.limit) || 100, 500) });
 }
 
