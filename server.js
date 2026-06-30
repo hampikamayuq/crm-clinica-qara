@@ -314,7 +314,7 @@ const FEW_SHOT_EXAMPLES = [
     role: "assistant",
     content: JSON.stringify({
       reply:
-        "Ola! Eu sou a Tawany, da Clinica Qara. Que bom ter voce por aqui! Para eu te direcionar certinho, me conta seu nome completo e se voce prefere atendimento presencial em Copacabana ou teleconsulta?",
+        "Ola! Sou a Tawany, da Clinica Qara. Me conta seu nome e se voce prefere atendimento presencial ou teleconsulta?",
       actions: [
         { type: "set_stage", value: "Novo Lead" },
         { type: "set_field", value: "queixa=manchas no rosto" },
@@ -359,9 +359,53 @@ const FEW_SHOT_EXAMPLES = [
     role: "assistant",
     content: JSON.stringify({
       reply:
-        "Entendo a sua preocupacao, Carlos! So que o diagnostico e o que usar precisam da avaliacao do medico na consulta, entao nao consigo indicar por aqui. Quem cuida de unhas e o Dr. Miguel Ceccarelli, especialista na area. Quer que eu veja horarios pra voce, presencial ou por teleconsulta?",
+        "Pra saber o que e e indicar o tratamento certo, precisa de uma avaliacao com o dermatologista — nao tem como dizer por aqui. O Dr. Miguel Ceccarelli e o nosso especialista em unhas. Prefere presencial ou teleconsulta, Carlos?",
       actions: [{ type: "set_tag", value: "unhas" }],
       confidence: 0.8,
+    }),
+  },
+  {
+    role: "user",
+    content: JSON.stringify({
+      example: true,
+      isFirstMessage: false,
+      coletado: { nome: "Ana", queixa: "psoriase", modalidade: "presencial" },
+      faltando: ["periodo"],
+      lastMessage: "pode ser qualquer dia, prefiro de tarde",
+    }),
+  },
+  {
+    role: "assistant",
+    content: JSON.stringify({
+      reply:
+        "Tarde anotado. Deixa eu checar os horarios da Dra. Manuela e ja te mando as opcoes.",
+      actions: [
+        { type: "set_field", value: "periodo=tarde" },
+        { type: "set_stage", value: "Aguardando Horarios" },
+      ],
+      confidence: 0.9,
+    }),
+  },
+  {
+    role: "user",
+    content: JSON.stringify({
+      example: true,
+      isFirstMessage: false,
+      coletado: { queixa: "unha", modalidade: "presencial", periodo: "sabado manha" },
+      faltando: [],
+      lastMessage: "prefiro sabado la tem estacionamento? fica perto de onde",
+    }),
+  },
+  {
+    role: "assistant",
+    content: JSON.stringify({
+      reply:
+        "Em SP a unidade e no Itaim Bibi (R. Joaquim Floriano, 820). Estacionamento rotativo nas redondezas — sem vaga propria. Sabado manha certo, vou checar disponibilidade com a equipe.",
+      actions: [
+        { type: "set_field", value: "periodo=sabado manha" },
+        { type: "set_stage", value: "Aguardando Horarios" },
+      ],
+      confidence: 0.92,
     }),
   },
 ];
@@ -533,8 +577,19 @@ async function processIncomingPayload(payload) {
     const store = readStore();
     const automationResults = [];
 
+    // Grava todas as mensagens primeiro para que o agente tenha contexto completo.
     for (const message of incoming) {
       upsertConversationMessage(store, message);
+    }
+
+    // Por conversa, dispara automações apenas para a última mensagem do batch.
+    // Evita respostas duplicadas quando o paciente envia várias mensagens rapidamente.
+    const lastPerConv = new Map();
+    for (const message of incoming) {
+      lastPerConv.set(`${message.channel}:${message.externalId}`, message);
+    }
+
+    for (const message of lastPerConv.values()) {
       const replies = await runAutomations(message, store);
       automationResults.push(...replies);
     }
@@ -614,10 +669,134 @@ function describeAttachments(attachments = []) {
   return attachments.map((attachment) => `[${attachment.type || "anexo"} recebido]`).join(" ");
 }
 
-// Fluxo hibrido: a IA responde primeiro; o bot importado fica como fallback.
+// Responde perguntas frequentes de forma deterministica, sem chamar a IA.
+// Retorna a string de resposta ou null se a mensagem nao for uma FAQ reconhecida.
+function faqReply(text, agentState) {
+  const t = String(text || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+  const has = (kws) => kws.some((k) => t.includes(k));
+
+  // Resolve medico de contexto (estado ja coletado ou mencionado no texto).
+  const collected = agentState?.collected || {};
+  const presentedMedico = (agentState?.presentedDoctors || [])[0] || null;
+  const medicoId =
+    collected.medico ||
+    presentedMedico ||
+    (has(["diego", "galvez"]) ? "diego"
+      : has(["miguel", "ceccarelli"]) ? "miguel"
+      : has(["diana", "stohmann"]) ? "diana"
+      : has(["manuela", "pedretti"]) ? "manuela"
+      : has(["fabricio", "andrade"]) ? "fabricio"
+      : null);
+  const medico = medicoId ? careTeam.find((d) => d.id === medicoId) : null;
+
+  // Resolve unidade de contexto.
+  const unidade =
+    collected.unidade ||
+    (has(["sp", "sao paulo", "paulo", "itaim"]) ? "sp-itaim"
+      : has(["barra da tijuca", "barra"]) ? "barra"
+      : has(["copacabana", "copa"]) ? "copacabana"
+      : null);
+
+  // Convenio
+  if (has(["convenio", "plano de saude", "plano medico", "bradesco", "amil", "unimed", "sulamerica", "hapvida", "particular"])) {
+    return "A clínica é particular. Não atendemos por convênio direto, mas emitimos nota fiscal para você solicitar reembolso ao plano. Quer agendar mesmo assim?";
+  }
+
+  // Estacionamento
+  if (has(["estacionamento", "tem vaga", "vaga de garagem", "onde estacionar", "tem estacionamento", "pode estacionar", "garagem"])) {
+    if (unidade === "sp-itaim") {
+      return "Em SP (Itaim Bibi) o estacionamento é rotativo na rua.";
+    }
+    if (unidade === "barra") {
+      return "Na unidade da Barra da Tijuca o estacionamento é rotativo.";
+    }
+    // Copacabana (default RJ)
+    return "Em Copacabana temos vaga de garagem para pacientes, mas é preciso autorização prévia — me informe placa e modelo do carro (exceto moto). Nas unidades da Barra e SP o estacionamento é rotativo.";
+  }
+
+  // Pagamento / parcelamento
+  if (has(["aceita cartao", "pode parcelar", "aceita pix", "forma de pagamento", "como pagar", "aceita credito", "aceita debito", "parcelado", "cartao de credito", "pix", "dinheiro"])) {
+    if (collected.modalidade === "teleconsulta" || has(["teleconsulta", "online"])) {
+      return "Teleconsulta: pagamento antecipado via PIX ou cartão de crédito em até 6x sem juros. O link é enviado por aqui após a confirmação do horário.";
+    }
+    if (unidade === "sp-itaim" || has(["sp", "sao paulo", "itaim"])) {
+      return "Em SP aceitamos PIX, dinheiro e cartão de crédito em até 3x sem juros. Agendamentos em SP exigem sinal de 30% para confirmar.";
+    }
+    return "Aceitamos dinheiro, PIX, débito e cartão de crédito em até 6x sem juros. Pagamento na clínica no dia da consulta.";
+  }
+
+  // Valor da consulta
+  if (has(["qual o valor", "quanto custa", "quanto e a consulta", "valor da consulta", "preco da consulta", "custa a consulta", "valor consulta", "preco consulta"])) {
+    if (medico) {
+      const modalidade = collected.modalidade;
+      if (modalidade === "teleconsulta") {
+        const val = medico.values.teleconsulta;
+        return `A teleconsulta com ${medico.name} custa R$ ${val},00. Quer que eu verifique horários?`;
+      }
+      if (unidade === "sp-itaim" && medico.values.presencial_sp) {
+        return `A consulta com ${medico.name} em SP custa R$ ${medico.values.presencial_sp},00. Quer que eu verifique horários?`;
+      }
+      const val = medico.values.presencial || medico.values.presencial_rj;
+      return `A consulta com ${medico.name} custa R$ ${val},00. Quer que eu verifique horários?`;
+    }
+    return "Os valores variam por médico: Dr. Diego Galvez R$ 450, Dr. Miguel Ceccarelli R$ 650 (RJ) / R$ 800 (SP), Dra. Diana Stohmann R$ 550, Dra. Manuela Pedretti R$ 550 e Dr. Fabricio de Andrade R$ 550. Quer saber com qual médico você se encaixaria melhor?";
+  }
+
+  // Endereço / localização
+  if (has(["onde fica", "endereco", "como chegar", "qual o endereco", "localizacao", "fica onde", "qual endereco", "me passa o endereco", "me manda o endereco"])) {
+    if (unidade === "sp-itaim" || has(["sp", "sao paulo", "itaim"])) {
+      return `Nossa unidade em SP fica na ${locations.itaim}.`;
+    }
+    if (unidade === "barra" || has(["barra da tijuca", "barra"])) {
+      return `Nossa unidade na Barra fica na ${locations.barra}.`;
+    }
+    // Copacabana default
+    return `Nossa unidade principal fica na ${locations.copacabana}. Também temos unidades na Barra da Tijuca (RJ) e Itaim Bibi (SP).`;
+  }
+
+  // Horários de atendimento (padrões específicos para evitar falsos positivos)
+  if (has(["horario de atendimento", "que horas abre", "quando atende", "quais dias atende", "horarios de atendimento", "dias de atendimento", "funciona aos sabados", "atende sabado", "atende domingo"])) {
+    if (medico) {
+      const locs = medico.locations;
+      const linhas = locs.map((l) => `• ${l.local.split(",")[0]}: ${l.horarios}`).join("\n");
+      return `Horários de ${medico.name}:\n${linhas}`;
+    }
+    return "Os horários variam por médico e unidade. Me conta qual médico ou especialidade você busca e te passo os horários certos.";
+  }
+
+  // Retorno
+  if (has(["retorno gratuito", "prazo de retorno", "direito a retorno", "consulta de retorno", "tem retorno"])) {
+    return "Sim, toda consulta tem direito a retorno gratuito em até 30 dias.";
+  }
+
+  // Como funciona teleconsulta
+  if (has(["como funciona teleconsulta", "o que e teleconsulta", "como e a teleconsulta", "funciona a teleconsulta", "teleconsulta funciona"])) {
+    return "A teleconsulta é por videoconferência, com a mesma qualidade da consulta presencial. Você paga antecipado (PIX ou cartão) e recebe o link aqui no WhatsApp antes do horário.";
+  }
+
+  return null;
+}
+
+// Fluxo hibrido: FAQ e IA respondem primeiro; o bot importado fica como fallback.
 async function runAutomations(inboundMessage, store) {
   // Classifica a mensagem do paciente (best-effort, nao bloqueia a resposta).
   if (classifyInboundToDb) classifyInboundToDb(inboundMessage).catch(() => {});
+
+  const conversation = getConversation(store, inboundMessage.channel, inboundMessage.externalId);
+  const agentState = conversation.agentState || {};
+
+  const faq = faqReply(inboundMessage.text, agentState);
+  if (faq) {
+    const result = await sendAndStoreMessage(
+      { channel: inboundMessage.channel, externalId: inboundMessage.externalId, text: faq },
+      store,
+      { automatedBy: "FAQ" },
+    );
+    return [result];
+  }
 
   const agentResults = await runAgentAutomation(inboundMessage, store);
   if (agentResults.length) return agentResults;
@@ -744,7 +923,7 @@ async function runAgent(inboundMessage, store) {
 
   const conversation = getConversation(store, inboundMessage.channel, inboundMessage.externalId);
   const agentState = conversation.agentState || {};
-  const messages = (conversation.messages || []).slice(-12).map((message) => ({
+  const messages = (conversation.messages || []).slice(-20).map((message) => ({
     role: message.direction === "inbound" ? "user" : "assistant",
     content: message.text,
   }));
@@ -899,7 +1078,8 @@ function injectDoctorPresentation(reply, actions, conversation) {
   return reply ? `${text}\n\n${reply}` : text;
 }
 
-// Modelos GPT-5 e o-series (reasoning) so aceitam temperature padrao (1).
+// Modelos GPT-5 e o-series (reasoning) nao aceitam temperature customizada: usam reasoning_effort.
+// gpt-4.1 e gpt-4o usam temperature normalmente.
 const supportsCustomTemperature = !/^(gpt-5|o1|o3|o4)/i.test(openAIModel);
 // ponytail: env tunavel; suba para "medium" se a triagem perder qualidade.
 const reasoningEffort = process.env.OPENAI_REASONING_EFFORT || "low";
@@ -910,7 +1090,7 @@ async function callOpenAI(messages) {
     response_format: { type: "json_object" },
     messages,
   };
-  if (supportsCustomTemperature) body.temperature = 0.4;
+  if (supportsCustomTemperature) body.temperature = 0.7;
   else body.reasoning_effort = reasoningEffort;
 
   const response = await fetch("https://api.openai.com/v1/chat/completions", {
