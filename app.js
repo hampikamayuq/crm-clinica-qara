@@ -84,6 +84,7 @@ let ui = {
   users: null,
   team: { users: null, editId: "" },
   quickReplies: null,
+  qr: { list: null, editId: "" },
   waMode: "text",
   selectedVisualBotId: "",
   funnelView: "kanban",
@@ -124,6 +125,112 @@ function bindEvents() {
       render();
     }
   });
+  document.addEventListener("keydown", (event) => {
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+      event.preventDefault();
+      if (appStarted) toggleCommandPalette();
+    }
+  });
+  // Navegacao do popup de resposta rapida (/atalho) no inbox.
+  document.addEventListener("keydown", (event) => {
+    if (!slashState || event.target !== slashState.textarea) return;
+    if (event.key === "ArrowDown") { event.preventDefault(); slashState.active = Math.min(slashState.active + 1, slashState.items.length - 1); paintSlash(); }
+    else if (event.key === "ArrowUp") { event.preventDefault(); slashState.active = Math.max(slashState.active - 1, 0); paintSlash(); }
+    else if (event.key === "Enter" || event.key === "Tab") { event.preventDefault(); expandSlash(); }
+    else if (event.key === "Escape") { event.preventDefault(); closeSlash(); }
+  });
+  document.addEventListener("mousedown", (event) => {
+    if (slashState && !event.target.closest("#qr-slash")) closeSlash();
+  });
+}
+
+// --- Command palette (Cmd/Ctrl+K) -----------------------------------------
+// Navegacao herda o role-gating da sidebar: comandos vem dos .nav-item ja na tela.
+function commandList() {
+  const nav = [...document.querySelectorAll(".nav-item[data-view]")].map((el) => ({
+    label: `Ir para ${el.textContent.trim()}`,
+    run: () => goToView(el.dataset.view),
+  }));
+  const actions = [
+    { label: "Novo lead", run: openLeadModal },
+    { label: "Nova tarefa", run: () => openTaskModal() },
+    { label: "Novo paciente", run: () => openPatientModal() },
+    { label: "Novo lancamento financeiro", run: openTransactionModal },
+    { label: "Sincronizar canais", run: syncExternalConversations },
+    { label: "Exportar dados", run: exportData },
+  ];
+  return [...nav, ...actions];
+}
+
+function goToView(view) {
+  if (!pageTitles[view]) return;
+  ui.view = view;
+  window.location.hash = view;
+  closeMenu();
+  render();
+}
+
+function toggleCommandPalette() {
+  document.querySelector("#cmdk-root") ? closeCommandPalette() : openCommandPalette();
+}
+
+function closeCommandPalette() {
+  document.querySelector("#cmdk-root")?.remove();
+}
+
+function openCommandPalette() {
+  const all = commandList();
+  let active = 0;
+  const root = document.createElement("div");
+  root.id = "cmdk-root";
+  root.innerHTML = `
+    <div class="cmdk-backdrop" data-cmdk="close"></div>
+    <div class="cmdk-panel" role="dialog" aria-label="Comandos">
+      <input class="cmdk-input" type="text" placeholder="Buscar acao ou pagina..." autocomplete="off" aria-label="Buscar comando" />
+      <ul class="cmdk-list" role="listbox"></ul>
+    </div>`;
+  document.body.appendChild(root);
+
+  const input = root.querySelector(".cmdk-input");
+  const list = root.querySelector(".cmdk-list");
+
+  const matches = (q) => {
+    const t = q.trim().toLowerCase();
+    if (!t) return all;
+    return all.filter((c) => c.label.toLowerCase().includes(t));
+  };
+  let current = matches("");
+
+  const paint = () => {
+    if (active >= current.length) active = Math.max(0, current.length - 1);
+    list.innerHTML = current.length
+      ? current.map((c, i) => `<li class="cmdk-item${i === active ? " active" : ""}" role="option" data-i="${i}">${escapeHtml(c.label)}</li>`).join("")
+      : `<li class="cmdk-empty">Nada encontrado</li>`;
+  };
+  paint();
+
+  const runActive = () => {
+    const cmd = current[active];
+    if (!cmd) return;
+    closeCommandPalette();
+    cmd.run();
+  };
+
+  input.addEventListener("input", () => { current = matches(input.value); active = 0; paint(); });
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "ArrowDown") { event.preventDefault(); active = Math.min(active + 1, current.length - 1); paint(); }
+    else if (event.key === "ArrowUp") { event.preventDefault(); active = Math.max(active - 1, 0); paint(); }
+    else if (event.key === "Enter") { event.preventDefault(); runActive(); }
+    else if (event.key === "Escape") { event.preventDefault(); closeCommandPalette(); }
+  });
+  list.addEventListener("click", (event) => {
+    const item = event.target.closest(".cmdk-item");
+    if (!item) return;
+    active = Number(item.dataset.i);
+    runActive();
+  });
+  root.querySelector("[data-cmdk=close]").addEventListener("click", closeCommandPalette);
+  input.focus();
 }
 
 function startApp() {
@@ -241,6 +348,8 @@ function handleClick(event) {
   if (action === "logout") return logout();
   if (action === "team-edit") { ui.team.editId = id; return renderConfig(); }
   if (action === "team-new") { ui.team.editId = ""; return renderConfig(); }
+  if (action === "qr-edit") { ui.qr.editId = id; return renderConfig(); }
+  if (action === "qr-new") { ui.qr.editId = ""; return renderConfig(); }
   if (action === "new-lead") return openLeadModal();
   if (action === "close-modal") return closeModal();
   if (action === "export-data") return exportData();
@@ -342,6 +451,7 @@ function handleSubmit(event) {
   if (form.dataset.form === "transaction") createTransaction(data);
   if (form.dataset.form === "settings") saveSettings(data);
   if (form.dataset.form === "team-user") saveTeamUser(data);
+  if (form.dataset.form === "quick-reply") saveQuickReply(data);
   if (form.dataset.form === "inbox-task") createInboxTask(data);
   if (form.dataset.form === "patient") savePatient(data);
   if (form.dataset.form === "task") saveTask(data);
@@ -411,6 +521,7 @@ function handleInput(event) {
   if (target.matches("#agent-test-input")) ui.agentTest.draft = target.value;
   if (target.matches("#agent-test-name")) ui.agentTest.name = target.value;
   if (target.matches("#global-search")) runGlobalSearch(target.value);
+  if (target.matches("#inbox-reply-input")) handleReplySlash(target);
 }
 
 // Busca global client-side (leads). Atualiza so o dropdown, sem re-render da view.
@@ -902,6 +1013,7 @@ function renderModuleCard(title, value, note, icon) {
 
 // Inbox DB-first: le conversas + mensagens + classificacao do Postgres (/api/inbox).
 function renderInbox() {
+  closeSlash();
   const box = ui.inbox;
   if (box.list === null) {
     if (!box.loading) loadInboxData();
@@ -1178,7 +1290,8 @@ function replyPlaceholderForMode() {
   if (ui.waMode === "buttons") return "Texto principal acima dos botões";
   if (ui.waMode === "list") return "Texto principal acima da lista";
   if (ui.waMode === "template") return "Opcional: anotação interna. O envio usa o nome do modelo";
-  return "Responder (registra no banco e envia pelo canal quando configurado)";
+  const hint = (ui.quickReplies || []).length ? " — digite / para respostas rápidas" : "";
+  return `Responder (registra no banco e envia pelo canal quando configurado)${hint}`;
 }
 
 function renderDbConversationSide(c) {
@@ -1241,7 +1354,7 @@ function renderDbConversationSide(c) {
         <div class="side-label">Notas & atividades</div>
         <div class="activity-list">${(ui.inbox.activities || []).map(renderActivityItem).join("") || '<p class="muted">Sem atividades.</p>'}</div>
         <div class="note-add">
-          <textarea id="inbox-note-input" placeholder="Nota interna"></textarea>
+          <textarea id="inbox-note-input" placeholder="Nota interna — markdown: **negrito**, *itálico*, - listas, [link](url)"></textarea>
           <button class="secondary-button" type="button" data-action="inbox-add-note" data-id="${c.id}">Adicionar nota</button>
         </div>
       </div>
@@ -1254,12 +1367,34 @@ function renderDbConversationSide(c) {
     </div>`;
 }
 
+// Markdown minimo e seguro p/ notas internas. Escapa ANTES de formatar (trust boundary).
+// ponytail: cobre negrito/italico/code/links/listas; sem tabelas/headings/imagens, add when pedirem.
+function renderMarkdown(text) {
+  let html = escapeHtml(String(text || ""));
+  html = html.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+|mailto:[^\s)]+)\)/g,
+    (_, label, url) => `<a href="${url}" target="_blank" rel="noopener noreferrer">${label}</a>`);
+  html = html
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>")
+    .replace(/(^|[^_\w])_([^_\n]+)_/g, "$1<em>$2</em>")
+    .replace(/`([^`\n]+)`/g, "<code>$1</code>");
+  let out = "", inList = false;
+  for (const line of html.split("\n")) {
+    const item = line.match(/^\s*[-*]\s+(.*)$/);
+    if (item) { if (!inList) { out += "<ul>"; inList = true; } out += `<li>${item[1]}</li>`; }
+    else { if (inList) { out += "</ul>"; inList = false; } out += `${line}<br>`; }
+  }
+  if (inList) out += "</ul>";
+  return out.replace(/<br>$/, "");
+}
+
 function renderActivityItem(a) {
   const time = a.createdAt ? new Date(a.createdAt).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "";
   const title = a.title || a.type || "Atividade";
+  const body = a.type === "NOTE" ? renderMarkdown(a.description) : escapeHtml(a.description);
   return `<div class="activity-item">
     <div class="activity-head"><span class="activity-type">${escapeHtml(title)}</span><time>${escapeHtml(time)}</time></div>
-    ${a.description ? `<div class="activity-desc">${escapeHtml(a.description)}</div>` : ""}
+    ${a.description ? `<div class="activity-desc">${body}</div>` : ""}
   </div>`;
 }
 
@@ -1490,8 +1625,87 @@ function insertQuickReply(id) {
   const qr = (ui.quickReplies || []).find((q) => q.id === id);
   const input = document.querySelector("#inbox-reply-input");
   if (!qr || !input) return;
-  input.value = input.value ? `${input.value}\n${qr.content}` : qr.content;
+  input.value = input.value ? `${input.value}\n${substituteVars(qr.content, currentConvName())}` : substituteVars(qr.content, currentConvName());
   input.focus();
+}
+
+// --- Resposta rapida por "/atalho" (estilo Chatwoot) -----------------------
+let slashState = null; // { items, active, start, end, textarea }
+
+// Puro: detecta um token "/query" no fim do texto antes do cursor.
+function matchSlash(before) {
+  const m = before.match(/(?:^|\s)\/(\S*)$/);
+  if (!m) return null;
+  return { query: m[1], start: before.length - m[1].length - 1 };
+}
+
+// Puro: troca {{nome}} e {{primeiro_nome}}.
+function substituteVars(text, name) {
+  const full = name || "";
+  const first = full.split(/\s+/)[0] || full;
+  return String(text)
+    .replace(/\{\{\s*nome\s*\}\}/gi, full)
+    .replace(/\{\{\s*primeiro_nome\s*\}\}/gi, first);
+}
+
+function currentConvName() {
+  const c = (ui.inbox.list || []).find((x) => x.id === ui.inbox.selectedId);
+  return c ? inboxConvName(c) : "";
+}
+
+function handleReplySlash(textarea) {
+  const replies = ui.quickReplies || [];
+  if (!replies.length) return closeSlash();
+  const hit = matchSlash(textarea.value.slice(0, textarea.selectionStart));
+  if (!hit) return closeSlash();
+  const q = hit.query.toLowerCase();
+  const items = replies.filter((r) => (r.shortcut || "").toLowerCase().includes(q) || (r.title || "").toLowerCase().includes(q));
+  if (!items.length) return closeSlash();
+  slashState = { items, active: 0, start: hit.start, end: textarea.selectionStart, textarea };
+  paintSlash();
+}
+
+function paintSlash() {
+  if (!slashState) return;
+  let pop = document.querySelector("#qr-slash");
+  if (!pop) {
+    pop = document.createElement("ul");
+    pop.id = "qr-slash";
+    pop.className = "qr-slash";
+    document.body.appendChild(pop);
+    pop.addEventListener("mousedown", (event) => {
+      const li = event.target.closest("[data-i]");
+      if (!li) return;
+      event.preventDefault();
+      slashState.active = Number(li.dataset.i);
+      expandSlash();
+    });
+  }
+  const { items, active, textarea } = slashState;
+  pop.innerHTML = items
+    .map((r, i) => `<li class="qr-slash-item${i === active ? " active" : ""}" data-i="${i}"><span class="qr-slash-sc">/${escapeHtml((r.shortcut || "").replace(/^\/+/, ""))}</span><span class="qr-slash-title">${escapeHtml(r.title || "")}</span></li>`)
+    .join("");
+  const rect = textarea.getBoundingClientRect();
+  pop.style.left = `${rect.left}px`;
+  pop.style.width = `${rect.width}px`;
+  pop.style.top = `${rect.top}px`;
+}
+
+function expandSlash() {
+  if (!slashState) return;
+  const { items, active, start, end, textarea } = slashState;
+  const content = substituteVars(items[active].content || "", currentConvName());
+  const v = textarea.value;
+  textarea.value = v.slice(0, start) + content + v.slice(end);
+  const pos = start + content.length;
+  closeSlash();
+  textarea.focus();
+  textarea.setSelectionRange(pos, pos);
+}
+
+function closeSlash() {
+  slashState = null;
+  document.querySelector("#qr-slash")?.remove();
 }
 
 function openInboxTaskModal(conversationId) {
@@ -2879,6 +3093,7 @@ function deleteVisualBot(botId) {
 
 function renderConfig() {
   if (isAdmin() && ui.team.users === null) loadTeamUsers();
+  if (ui.qr.list === null) loadQuickRepliesAdmin();
   appRoot().innerHTML = `
     <div class="config-grid">
       <section class="panel">
@@ -2931,6 +3146,8 @@ function renderConfig() {
       </section>
 
       ${renderTeamPanel()}
+
+      ${renderQuickReplyPanel()}
 
       <section class="panel">
         <div class="section-header">
@@ -3079,6 +3296,97 @@ async function saveTeamUser(data) {
     loadTeamUsers();
   } catch {
     toast("Falha ao salvar usuario.");
+  }
+}
+
+// Gestao de respostas rapidas. Auth (nao admin): recepcao gerencia as proprias.
+// Sem rota DELETE no backend -> "remover" = desativar (active=false).
+function renderQuickReplyPanel() {
+  const list = ui.qr.list || [];
+  const editing = list.find((q) => q.id === ui.qr.editId);
+  const rows = list.length
+    ? list.map((q) => `
+        <tr>
+          <td><code>/${escapeHtml((q.shortcut || "").replace(/^\/+/, ""))}</code></td>
+          <td>${escapeHtml(q.title || "—")}</td>
+          <td class="muted">${escapeHtml((q.content || "").slice(0, 60))}${(q.content || "").length > 60 ? "…" : ""}</td>
+          <td><span class="chip ${q.active ? "green" : ""}">${q.active ? "Ativa" : "Inativa"}</span></td>
+          <td><button class="link-button" type="button" data-action="qr-edit" data-id="${q.id}">Editar</button></td>
+        </tr>`).join("")
+    : `<tr><td colspan="5" class="muted">${ui.qr.list === null ? "Carregando..." : "Nenhuma resposta rápida."}</td></tr>`;
+  return `
+    <section class="panel">
+      <div class="section-header">
+        <h2>Respostas rápidas</h2>
+        <span class="chip primary">${list.length}</span>
+      </div>
+      <div class="data-table-wrap">
+        <table class="data-table">
+          <thead><tr><th>Atalho</th><th>Título</th><th>Conteúdo</th><th>Status</th><th></th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+      <form data-form="quick-reply" class="form-grid" style="margin-top:16px">
+        <input type="hidden" name="id" value="${editing?.id || ""}" />
+        <div class="field">
+          <label for="qr-shortcut">Atalho (após /)</label>
+          <input id="qr-shortcut" name="shortcut" required value="${escapeHtml(editing?.shortcut || "")}" placeholder="ex.: agenda" />
+        </div>
+        <div class="field">
+          <label for="qr-title">Título</label>
+          <input id="qr-title" name="title" value="${escapeHtml(editing?.title || "")}" placeholder="opcional, usa o atalho" />
+        </div>
+        <div class="field full">
+          <label for="qr-content">Conteúdo</label>
+          <textarea id="qr-content" name="content" required placeholder="Texto enviado ao paciente. Variáveis: {{nome}}, {{primeiro_nome}}">${escapeHtml(editing?.content || "")}</textarea>
+        </div>
+        <div class="field">
+          <label><input type="checkbox" name="active" ${editing ? (editing.active ? "checked" : "") : "checked"} /> Ativa</label>
+        </div>
+        <div class="modal-actions full">
+          ${editing ? `<button class="secondary-button" type="button" data-action="qr-new">Cancelar edição</button>` : ""}
+          <button class="primary-button" type="submit">${editing ? "Salvar resposta" : "Adicionar resposta"}</button>
+        </div>
+      </form>
+    </section>`;
+}
+
+async function loadQuickRepliesAdmin() {
+  if (ui.qr.list === null) ui.qr.list = [];
+  try {
+    const response = await apiFetch("/api/quick-replies", {}, false);
+    if (response.ok) ui.qr.list = (await response.json()).data || [];
+  } catch {
+    /* mantem lista atual */
+  } finally {
+    if (ui.view === "config") renderConfig();
+  }
+}
+
+async function saveQuickReply(data) {
+  const id = clean(data.id || "");
+  const body = {
+    shortcut: clean(data.shortcut || "").replace(/^\//, ""),
+    title: clean(data.title || ""),
+    content: data.content || "",
+    active: data.active === "on" || data.active === true,
+  };
+  if (!body.shortcut || !clean(body.content)) return toast("Informe atalho e conteúdo.");
+  try {
+    const response = await apiFetch(id ? `/api/quick-replies/${id}` : "/api/quick-replies", {
+      method: id ? "PATCH" : "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }, false);
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) return toast(payload.error?.message || "Falha ao salvar resposta.");
+    toast(id ? "Resposta atualizada." : "Resposta adicionada.");
+    ui.qr.editId = "";
+    ui.qr.list = null;
+    ui.quickReplies = null; // invalida dropdown/slash do inbox
+    loadQuickRepliesAdmin();
+  } catch {
+    toast("Falha ao salvar resposta.");
   }
 }
 

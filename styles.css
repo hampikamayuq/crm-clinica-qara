@@ -2534,3 +2534,27 @@ textarea:focus {
 .activity-desc { font-size: 13px; color: var(--ink); margin-top: 2px; white-space: pre-wrap; }
 .note-add { display: flex; flex-direction: column; gap: 6px; }
 .note-add textarea { width: 100%; min-height: 56px; padding: 8px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); resize: vertical; font: inherit; }
+
+/* Command palette (Cmd/Ctrl+K) */
+#cmdk-root { position: fixed; inset: 0; z-index: 90; display: flex; align-items: flex-start; justify-content: center; }
+.cmdk-backdrop { position: absolute; inset: 0; background: rgba(12, 18, 20, 0.46); }
+.cmdk-panel { position: relative; margin-top: 12vh; width: min(560px, 92vw); background: var(--surface); border-radius: 10px; box-shadow: var(--shadow); overflow: hidden; }
+.cmdk-input { width: 100%; box-sizing: border-box; border: none; border-bottom: 1px solid var(--line); padding: 16px 18px; font: inherit; font-size: 15px; color: var(--ink); outline: none; }
+.cmdk-list { list-style: none; margin: 0; padding: 6px; max-height: 52vh; overflow: auto; }
+.cmdk-item { padding: 10px 12px; border-radius: 6px; font-size: 14px; color: var(--ink); cursor: pointer; }
+.cmdk-item.active, .cmdk-item:hover { background: var(--primary-soft); color: var(--primary-2); }
+.cmdk-empty { padding: 14px 12px; font-size: 13px; color: var(--muted); }
+
+/* Resposta rapida por /atalho no inbox */
+.qr-slash { position: fixed; z-index: 75; list-style: none; margin: 0; padding: 6px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow); max-height: 240px; overflow: auto; transform: translateY(calc(-100% - 6px)); }
+.qr-slash-item { display: flex; gap: 10px; align-items: baseline; padding: 8px 10px; border-radius: 6px; cursor: pointer; }
+.qr-slash-item.active, .qr-slash-item:hover { background: var(--primary-soft); }
+.qr-slash-sc { font-family: ui-monospace, monospace; font-size: 12px; font-weight: 700; color: var(--primary-2); white-space: nowrap; }
+.qr-slash-title { font-size: 13px; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Notas em markdown (activity NOTE) */
+.activity-desc ul { margin: 4px 0; padding-left: 18px; }
+.activity-desc li { margin: 1px 0; }
+.activity-desc code { background: var(--surface-2); padding: 1px 5px; border-radius: 4px; font-size: 12px; font-family: ui-monospace, monospace; }
+.activity-desc a { color: var(--primary-2); text-decoration: underline; }
+.activity-desc strong { font-weight: 700; }
