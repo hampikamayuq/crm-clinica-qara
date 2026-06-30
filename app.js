@@ -194,12 +194,17 @@ function openCommandPalette() {
   const input = root.querySelector(".cmdk-input");
   const list = root.querySelector(".cmdk-list");
 
-  const matches = (q) => {
+  let entityHits = []; // comandos de paciente (busca async)
+  let searchToken = 0;
+  let debounce = null;
+
+  const staticMatches = (q) => {
     const t = q.trim().toLowerCase();
     if (!t) return all;
     return all.filter((c) => c.label.toLowerCase().includes(t));
   };
-  let current = matches("");
+  let current = staticMatches("");
+  const recompute = () => { current = [...staticMatches(input.value), ...entityHits]; };
 
   const paint = () => {
     if (active >= current.length) active = Math.max(0, current.length - 1);
@@ -209,6 +214,23 @@ function openCommandPalette() {
   };
   paint();
 
+  // Busca paciente por nome/telefone (token evita corrida entre requisicoes).
+  const searchEntities = (q) => {
+    const token = ++searchToken;
+    apiFetch(`/api/patients?search=${encodeURIComponent(q)}`, {}, false)
+      .then((r) => (r.ok ? r.json() : { data: [] }))
+      .then(({ data }) => {
+        if (token !== searchToken || !document.querySelector("#cmdk-root")) return;
+        entityHits = (data || []).slice(0, 6).map((p) => ({
+          label: `Paciente: ${p.name}${p.phone ? ` · ${p.phone}` : ""}`,
+          run: () => { goToView("pacientes"); selectPatient(p.id); },
+        }));
+        recompute();
+        paint();
+      })
+      .catch(() => {});
+  };
+
   const runActive = () => {
     const cmd = current[active];
     if (!cmd) return;
@@ -216,7 +238,15 @@ function openCommandPalette() {
     cmd.run();
   };
 
-  input.addEventListener("input", () => { current = matches(input.value); active = 0; paint(); });
+  input.addEventListener("input", () => {
+    entityHits = [];
+    recompute();
+    active = 0;
+    paint();
+    clearTimeout(debounce);
+    const q = input.value.trim();
+    if (q.length >= 2) debounce = setTimeout(() => searchEntities(q), 180);
+  });
   input.addEventListener("keydown", (event) => {
     if (event.key === "ArrowDown") { event.preventDefault(); active = Math.min(active + 1, current.length - 1); paint(); }
     else if (event.key === "ArrowUp") { event.preventDefault(); active = Math.max(active - 1, 0); paint(); }
@@ -1367,26 +1397,8 @@ function renderDbConversationSide(c) {
     </div>`;
 }
 
-// Markdown minimo e seguro p/ notas internas. Escapa ANTES de formatar (trust boundary).
-// ponytail: cobre negrito/italico/code/links/listas; sem tabelas/headings/imagens, add when pedirem.
-function renderMarkdown(text) {
-  let html = escapeHtml(String(text || ""));
-  html = html.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+|mailto:[^\s)]+)\)/g,
-    (_, label, url) => `<a href="${url}" target="_blank" rel="noopener noreferrer">${label}</a>`);
-  html = html
-    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-    .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>")
-    .replace(/(^|[^_\w])_([^_\n]+)_/g, "$1<em>$2</em>")
-    .replace(/`([^`\n]+)`/g, "<code>$1</code>");
-  let out = "", inList = false;
-  for (const line of html.split("\n")) {
-    const item = line.match(/^\s*[-*]\s+(.*)$/);
-    if (item) { if (!inList) { out += "<ul>"; inList = true; } out += `<li>${item[1]}</li>`; }
-    else { if (inList) { out += "</ul>"; inList = false; } out += `${line}<br>`; }
-  }
-  if (inList) out += "</ul>";
-  return out.replace(/<br>$/, "");
-}
+// renderMarkdown, matchSlash, substituteVars vivem em markdown.js (fonte unica
+// browser+testes), expostas no window pela ponte <script type="module"> do index.html.
 
 function renderActivityItem(a) {
   const time = a.createdAt ? new Date(a.createdAt).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "";
@@ -1632,21 +1644,6 @@ function insertQuickReply(id) {
 // --- Resposta rapida por "/atalho" (estilo Chatwoot) -----------------------
 let slashState = null; // { items, active, start, end, textarea }
 
-// Puro: detecta um token "/query" no fim do texto antes do cursor.
-function matchSlash(before) {
-  const m = before.match(/(?:^|\s)\/(\S*)$/);
-  if (!m) return null;
-  return { query: m[1], start: before.length - m[1].length - 1 };
-}
-
-// Puro: troca {{nome}} e {{primeiro_nome}}.
-function substituteVars(text, name) {
-  const full = name || "";
-  const first = full.split(/\s+/)[0] || full;
-  return String(text)
-    .replace(/\{\{\s*nome\s*\}\}/gi, full)
-    .replace(/\{\{\s*primeiro_nome\s*\}\}/gi, first);
-}
 
 function currentConvName() {
   const c = (ui.inbox.list || []).find((x) => x.id === ui.inbox.selectedId);

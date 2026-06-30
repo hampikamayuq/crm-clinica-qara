@@ -82,15 +82,15 @@ async function seedServices() {
 
 async function seedQuickReplies() {
   const replies = [
-    { shortcut: "/endereco", title: "Endereco", content: "Atendemos em Copacabana: Rua Santa Clara, 50, sala 521 - Edificio Golden Point." },
-    { shortcut: "/valor-consulta", title: "Valor da consulta", content: "O valor da consulta varia por profissional. Posso confirmar o valor certinho do(a) especialista que voce procura." },
-    { shortcut: "/retorno", title: "Retorno", content: "A consulta da direito a retorno em ate 30 dias." },
-    { shortcut: "/cisto", title: "Cisto", content: "A retirada de cisto e avaliada em consulta com o Dr. Diego (cirurgia dermatologica)." },
-    { shortcut: "/biopsia", title: "Biopsia", content: "A biopsia de pele e definida pelo medico durante a consulta de avaliacao." },
-    { shortcut: "/unha", title: "Unha", content: "Doencas das unhas sao com o Dr. Miguel, especialista na area." },
-    { shortcut: "/preparo-cirurgia", title: "Preparo cirurgia", content: "As orientacoes de preparo sao enviadas pela equipe apos a confirmacao do procedimento." },
-    { shortcut: "/pos-operatorio", title: "Pos-operatorio", content: "O acompanhamento pos-operatorio administrativo e feito pela equipe; duvidas clinicas sao avaliadas em retorno." },
-    { shortcut: "/humano", title: "Falar com humano", content: "Vou te encaminhar para um atendente da equipe. Um momento, por favor." },
+    { shortcut: "endereco", title: "Endereco", content: "Atendemos em Copacabana: Rua Santa Clara, 50, sala 521 - Edificio Golden Point." },
+    { shortcut: "valor-consulta", title: "Valor da consulta", content: "O valor da consulta varia por profissional. Posso confirmar o valor certinho do(a) especialista que voce procura." },
+    { shortcut: "retorno", title: "Retorno", content: "A consulta da direito a retorno em ate 30 dias." },
+    { shortcut: "cisto", title: "Cisto", content: "A retirada de cisto e avaliada em consulta com o Dr. Diego (cirurgia dermatologica)." },
+    { shortcut: "biopsia", title: "Biopsia", content: "A biopsia de pele e definida pelo medico durante a consulta de avaliacao." },
+    { shortcut: "unha", title: "Unha", content: "Doencas das unhas sao com o Dr. Miguel, especialista na area." },
+    { shortcut: "preparo-cirurgia", title: "Preparo cirurgia", content: "As orientacoes de preparo sao enviadas pela equipe apos a confirmacao do procedimento." },
+    { shortcut: "pos-operatorio", title: "Pos-operatorio", content: "O acompanhamento pos-operatorio administrativo e feito pela equipe; duvidas clinicas sao avaliadas em retorno." },
+    { shortcut: "humano", title: "Falar com humano", content: "Vou te encaminhar para um atendente da equipe. Um momento, por favor." },
   ];
   for (const r of replies) {
     await prisma.quickReply.upsert({

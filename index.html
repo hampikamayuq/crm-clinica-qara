@@ -134,6 +134,10 @@
     <div id="modal-root"></div>
     <div id="toast-root" class="toast-root" aria-live="polite" aria-atomic="true"></div>
     <script src="./flows/leads-novos.bot.js"></script>
+    <script type="module">
+      import { renderMarkdown, matchSlash, substituteVars } from "./markdown.js";
+      Object.assign(window, { renderMarkdown, matchSlash, substituteVars });
+    </script>
     <script src="./app.js" defer></script>
   </body>
 </html>

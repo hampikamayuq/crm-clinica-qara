@@ -8,6 +8,19 @@ import { emit } from "./workflow.service.js";
 
 const DIRECTIONS = new Set(["INBOUND", "OUTBOUND", "SYSTEM"]);
 
+// Auto-assign: recepcionista (SECRETARY) ativo menos carregado entre conversas abertas.
+// ponytail: 1 query + N counts por inbound novo; ok p/ clinica. Vira contador round-robin se o volume explodir.
+async function pickAutoAssignee() {
+  const candidates = await prisma.user.findMany({ where: { active: true, role: "SECRETARY" }, select: { id: true } });
+  if (!candidates.length) return null;
+  const loads = await Promise.all(candidates.map(async (u) => ({
+    id: u.id,
+    n: await prisma.conversation.count({ where: { assignedToId: u.id, status: { notIn: ["RESOLVED", "ARCHIVED"] } } }),
+  })));
+  loads.sort((a, b) => a.n - b.n);
+  return loads[0].id;
+}
+
 function normalizeDirection(direction) {
   const d = String(direction || "").toUpperCase();
   return DIRECTIONS.has(d) ? d : "SYSTEM";
@@ -41,7 +54,17 @@ export async function recordMessage({ channel, externalId, text, direction, prov
       metadata: { providerMessageId },
     });
   }
-  if (dir === "INBOUND") emit("message.received", { conversation, message });
+  if (dir === "INBOUND") {
+    if (!conversation.assignedToId) {
+      const assignee = await pickAutoAssignee();
+      if (assignee) {
+        await prisma.conversation.update({ where: { id: conversation.id }, data: { assignedToId: assignee } });
+        conversation.assignedToId = assignee;
+        await createActivity({ conversationId: conversation.id, type: "HANDOFF", title: "Atribuido automaticamente", description: null });
+      }
+    }
+    emit("message.received", { conversation, message });
+  }
   return { conversation, message, created: true };
 }
 
