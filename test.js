@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { buildWhatsAppMessagePayload, guardAgentReply, parseAgentJson, previewOutboundText } from "./server.js";
+import { buildWhatsAppMessagePayload, guardAgentReply, injectDoctorPresentation, parseAgentJson, polishAgentReply, previewOutboundText } from "./server.js";
 import { calculateLeadScore, temperatureFromScore } from "./src/server/services/lead-score.service.js";
 
 // Money path: a agente NUNCA pode mandar um valor que nao seja de careTeam.
@@ -30,6 +30,21 @@ test("guardAgentReply nao altera texto sem dinheiro", () => {
 test("parseAgentJson extrai JSON cercado por ruido", () => {
   const parsed = parseAgentJson('blá blá {"reply":"oi","confidence":0.9} fim');
   assert.equal(parsed.reply, "oi");
+});
+
+test("polishAgentReply remove aberturas roboticas", () => {
+  assert.equal(polishAgentReply("Certo — o que você quer ver antes?"), "O que você quer ver antes?");
+  assert.equal(polishAgentReply("Lembro sim — você veio da Doctoralia."), "Você veio da Doctoralia.");
+});
+
+test("present_doctor injeta apresentacao curta, nao ficha completa", () => {
+  const out = injectDoctorPresentation(
+    "Prefere presencial ou teleconsulta?",
+    [{ type: "present_doctor", value: "miguel" }],
+    { agentState: {} },
+  );
+  assert.match(out, /Dr\. Miguel Ceccarelli/);
+  assert.doesNotMatch(out, /Estacionamento|Valor da Consulta|Formas de Pagamento/);
 });
 
 test("schema Prisma mantem o escopo CRM completo", () => {

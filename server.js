@@ -273,9 +273,9 @@ const RUNTIME_CONTRACT = [
   "",
   "Você recebe um JSON de contexto (context) com careTeam, knowledge, isFirstMessage, coletado, faltando. Use SOMENTE esses dados — nunca invente valor, horario ou endereco.",
   "",
-  "TOM: responda como conversa de WhatsApp. Use uma frase especifica sobre a mensagem do paciente, evite abertura pronta e peca so o proximo dado necessario.",
+  "TOM: responda como conversa de WhatsApp. Use uma frase especifica sobre a mensagem do paciente, evite abertura pronta e peca so o proximo dado necessario. Nao comece com 'Lembro sim', 'Certo', 'Entendi', 'Claro' ou menus de opcoes quando o paciente fez uma pergunta simples.",
   "",
-  "APRESENTACAO DO MEDICO: nao escreva a apresentacao longa. Emita a action present_doctor com o id do medico (context.careTeam[].id: 'diego','miguel','diana','manuela','fabricio'; 'miguel-sp' para SP) somente quando o paciente pedir dados do medico/valor/local ou quando ja estiver pronto para agendar com esse medico. O sistema insere o texto oficial uma unica vez por conversa, antes da sua mensagem. Na reply escreva so a continuacao. Nao repita para medico ja em agentState.presentedDoctors.",
+  "APRESENTACAO DO MEDICO: nao escreva apresentacao longa. Se o paciente perguntar quem e o medico, responda em 1 frase curta. Emita a action present_doctor com o id do medico (context.careTeam[].id: 'diego','miguel','diana','manuela','fabricio'; 'miguel-sp' para SP) somente quando precisar identificar oficialmente o medico; o sistema insere uma frase curta uma unica vez. Nao despeje endereco, estacionamento, pagamento e valor junto, a menos que o paciente pergunte por isso.",
   "",
   "VALOR: quando perguntarem o valor e o medico ja foi identificado, responda direto (todos exceto Dr. Miguel tem o mesmo valor presencial/online). So o Dr. Miguel varia por cidade (RJ R$650 / SP R$800) — nesse caso pergunte a cidade antes.",
   "",
@@ -336,7 +336,7 @@ const FEW_SHOT_EXAMPLES = [
     role: "assistant",
     content: JSON.stringify({
       reply:
-        "Entendi, Marina. Queda de cabelo costuma ficar com a Dra. Diana, que atende tricologia. Para teleconsulta, qual periodo fica melhor pra voce?",
+        "Queda de cabelo fica com a Dra. Diana, que atende tricologia. Para teleconsulta, qual periodo fica melhor pra voce?",
       actions: [
         { type: "set_tag", value: "tricologia" },
         { type: "set_field", value: "modalidade=teleconsulta" },
@@ -409,6 +409,14 @@ const FEW_SHOT_EXAMPLES = [
     }),
   },
 ];
+
+const doctorShortIntros = {
+  diego: "Para cirurgia dermatologica, o medico e o Dr. Diego Galvez.",
+  miguel: "Para unhas, o medico e o Dr. Miguel Ceccarelli, dermatologista especialista em doencas de unha.",
+  diana: "Para cabelo e couro cabeludo, a medica e a Dra. Diana Stohmann, especialista em tricologia.",
+  manuela: "Para psoriase, dermatite atopica e hidradenite, a medica e a Dra. Manuela Pedretti Cabral.",
+  fabricio: "Para dermatologia infantil, o medico e o Dr. Fabricio de Andrade.",
+};
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
@@ -526,7 +534,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   });
 }
 
-export { guardAgentReply, resolveDoctorValue, parseAgentJson, buildWhatsAppMessagePayload, previewOutboundText };
+export { guardAgentReply, injectDoctorPresentation, polishAgentReply, resolveDoctorValue, parseAgentJson, buildWhatsAppMessagePayload, previewOutboundText };
 
 async function login(req, res) {
   if (!loginWithPassword) return json(res, 503, { ok: false, error: "login_unavailable" });
@@ -985,6 +993,7 @@ async function runAgent(inboundMessage, store) {
     const parsed = parseAgentJson(completion);
     if (!parsed?.reply) return null;
     parsed.reply = guardAgentReply(parsed.reply, conversation);
+    parsed.reply = polishAgentReply(parsed.reply);
     parsed.reply = injectDoctorPresentation(parsed.reply, parsed.actions || [], conversation);
     applyAgentActions(conversation, parsed.actions || []);
     conversation.agentState = {
@@ -1027,6 +1036,14 @@ function guardAgentReply(reply, conversation = null) {
   return guarded;
 }
 
+function polishAgentReply(reply) {
+  const text = clean(reply).replace(
+    /^(lembro sim|certo|entendi|claro|perfeito|otimo|ótimo)[\s,!.\-—:]+/i,
+    "",
+  );
+  return text.replace(/^([a-záéíóúãõç])/, (letter) => letter.toUpperCase());
+}
+
 // Descobre o valor correto da consulta quando ha UM medico identificavel (nome no texto
 // ou tag no estado) e ele tem um unico valor. Caso ambiguo (ex.: Dr. Miguel RJ/SP), retorna null.
 function resolveDoctorValue(text, conversation) {
@@ -1050,8 +1067,7 @@ function resolveDoctorValue(text, conversation) {
   return distinct.length === 1 ? distinct[0] : null;
 }
 
-// Injeta o texto OFICIAL de apresentacao do medico quando o agente emite a action
-// present_doctor, uma unica vez por conversa. O texto nao trafega no contexto do modelo.
+// Injeta uma apresentacao curta do medico quando o agente emite present_doctor.
 function injectDoctorPresentation(reply, actions, conversation) {
   const action = (actions || []).find((item) => clean(item.type) === "present_doctor");
   if (!action) return reply;
@@ -1064,7 +1080,7 @@ function injectDoctorPresentation(reply, actions, conversation) {
   if (!member) return reply;
 
   const useSp = member.id === "miguel" && wantsSp && member.presentationSp;
-  const text = useSp ? member.presentationSp : member.presentation;
+  const text = doctorShortIntros[useSp ? "miguel" : member.id];
   if (!text) return reply;
 
   const state = conversation.agentState || {};
@@ -1075,6 +1091,7 @@ function injectDoctorPresentation(reply, actions, conversation) {
   presented.add(key);
   conversation.agentState = { ...state, presentedDoctors: [...presented] };
 
+  if (normalizeText(reply).includes(normalizeText(member.name))) return reply;
   return reply ? `${text}\n\n${reply}` : text;
 }
 
