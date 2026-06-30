@@ -119,6 +119,7 @@ export async function convertToPatient(id, userId = null) {
       data: { name: lead.name, phone: lead.phone, email: lead.email },
     });
     await tx.lead.update({ where: { id }, data: { patientId: patient.id } });
+    await tx.conversation.updateMany({ where: { leadId: id, patientId: null }, data: { patientId: patient.id } });
     await tx.activity.create({
       data: {
         type: "SYSTEM",

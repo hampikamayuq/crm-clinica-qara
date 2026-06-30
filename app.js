@@ -59,7 +59,7 @@ const pageTitles = {
   tarefas: ["Tarefas", "Follow-ups e pendencias da equipe"],
   operations: ["Operacao", "Briefing, follow-ups e importacao"],
   agenda: ["Agenda", "Horarios e confirmacoes"],
-  financeiro: ["Financeiro", "Recebimentos sem prontuario"],
+  financeiro: ["Financeiro", "Recebimentos e controle financeiro"],
   channels: ["Canais", "WhatsApp API e Instagram"],
   bots: ["Bots", "Automacoes de atendimento"],
   config: ["Dados", "Exportacao e ajustes locais"],
@@ -295,11 +295,7 @@ function renderLogin(message = "") {
   root.innerHTML = `
     <section class="login-panel" aria-label="Entrar no CliniQara">
       <div class="brand">
-        <div class="brand-mark" aria-hidden="true">Q</div>
-        <div>
-          <div class="brand-name">CliniQara</div>
-          <div class="brand-subtitle">CRM sem prontuario</div>
-        </div>
+        <img class="brand-logo" src="./assets/qara-logo.webp" alt="Clinica Qara" />
       </div>
       <div>
         <h1>Entrar no sistema</h1>
@@ -388,6 +384,13 @@ function handleClick(event) {
   if (action === "reset-data") return resetData();
   if (action === "select-lead") return selectLead(id);
   if (action === "select-patient") return selectPatient(id);
+  if (action === "open-linked-conversation") {
+    return openLinkedConversation({
+      conversationId: id,
+      leadId: actionEl.dataset.leadId || "",
+      patientId: actionEl.dataset.patientId || "",
+    });
+  }
   if (action === "new-patient") return openPatientModal();
   if (action === "patient-edit") return openPatientModal(id);
   if (action === "new-task") return openTaskModal();
@@ -996,7 +999,7 @@ function renderOpsHero({ dbLeads, dbAppointments, patientCount, pending, pipelin
         <div class="status-row">
           <span class="chip primary">${escapeHtml(syncLabel)}</span>
           <span class="chip green">LGPD administrativo</span>
-          <span class="chip amber">sem prontuario</span>
+          <span class="chip amber">atendimento administrativo</span>
         </div>
       </div>
       <div class="ops-scoreboard">
@@ -1178,6 +1181,24 @@ async function selectInboxConversation(id) {
   if (window.innerWidth <= 900) ui.inboxMobileView = "chat";
   await Promise.all([loadInboxMessages(id), loadInboxActivities(id)]);
   renderInbox();
+}
+
+async function openLinkedConversation({ conversationId = "", leadId = "", patientId = "" } = {}) {
+  ui.view = "inbox";
+  window.location.hash = "inbox";
+  ui.inbox.list = null;
+  ui.inbox.selectedId = conversationId || null;
+  render();
+  await loadInboxData();
+  const conversation =
+    (ui.inbox.list || []).find(
+      (c) =>
+        (conversationId && c.id === conversationId) ||
+        (leadId && c.lead?.id === leadId) ||
+        (patientId && (c.patient?.id === patientId || c.lead?.patientId === patientId)),
+    ) || null;
+  if (!conversation) return toast("Conversa nao encontrada para este registro.");
+  await selectInboxConversation(conversation.id);
 }
 
 // Recarrega a lista do banco preservando a conversa selecionada (apos uma escrita).
@@ -1800,7 +1821,7 @@ function renderPatientsTable(list) {
     <div class="data-table-wrap">
       <table class="data-table">
         <thead>
-          <tr><th>Nome</th><th>Telefone</th><th>E-mail</th><th>CPF</th><th>LGPD</th><th>Criado</th></tr>
+          <tr><th>Nome</th><th>Telefone</th><th>E-mail</th><th>CPF</th><th>LGPD</th><th>Criado</th><th></th></tr>
         </thead>
         <tbody>
           ${list
@@ -1813,6 +1834,7 @@ function renderPatientsTable(list) {
               <td class="muted">${escapeHtml(p.cpf || "-")}</td>
               <td>${p.lgpdConsent ? '<span class="chip green">Sim</span>' : '<span class="chip">Não</span>'}</td>
               <td class="muted">${escapeHtml(formatDate(p.createdAt))}</td>
+              <td><button class="link-button" type="button" data-action="open-linked-conversation" data-patient-id="${escapeHtml(p.id)}">Conversa →</button></td>
             </tr>`,
             )
             .join("")}
@@ -1831,6 +1853,7 @@ function renderPatientDetail(p) {
     <div class="lead-summary">
       <h3>${escapeHtml(p.name)}</h3>
       <div class="button-row" style="margin-top:8px">
+        <button class="secondary-button" type="button" data-action="open-linked-conversation" data-patient-id="${escapeHtml(p.id)}">Abrir conversa</button>
         <button class="secondary-button" type="button" data-action="patient-edit" data-id="${p.id}">Editar</button>
       </div>
       <div class="side-block">
@@ -2090,7 +2113,7 @@ function renderTriageView() {
             .map((lead) => {
               const k = leadClassification(lead);
               return `<tr>
-                <td><div class="cell-main"><span class="avatar sm">${initials(lead.name)}</span>${escapeHtml(lead.name)}</div></td>
+                <td><div class="cell-main"><span class="avatar sm">${initials(lead.name)}</span><button class="link-button" type="button" data-action="open-linked-conversation" data-lead-id="${escapeHtml(lead.id)}">${escapeHtml(lead.name)}</button></div></td>
                 <td>${escapeHtml(PIPELINE_LABEL[k.pipeline_funil] || k.pipeline_funil || "-")}</td>
                 <td><span class="chip ${PRIORITY_TONE[k.prioridade] || "primary"}">${escapeHtml(k.prioridade || "-")}</span>${k.precisa_humano_agora ? ' <span class="chip red">Humano</span>' : ""}</td>
                 <td><span class="chip ${TEMP_TONE[k.temperatura] || "amber"}">${escapeHtml(k.temperatura || "-")}</span></td>
@@ -2142,8 +2165,8 @@ function renderClinicalCard(c) {
   const k = leadClassification(c);
   const name = c.name;
   return `
-    <article class="lead-card" data-action="select-lead" data-id="${c.id}">
-      <div class="cell-main"><span class="avatar sm">${initials(name)}</span><strong>${escapeHtml(name)}</strong></div>
+    <article class="lead-card">
+      <div class="cell-main"><span class="avatar sm">${initials(name)}</span><button class="link-button" type="button" data-action="open-linked-conversation" data-lead-id="${escapeHtml(c.id)}">${escapeHtml(name)}</button></div>
       <div class="card-chips">
         <span class="chip ${PRIORITY_TONE[k.prioridade] || "primary"}">${escapeHtml(k.prioridade || "-")}</span>
         <span class="chip ${TEMP_TONE[k.temperatura] || "amber"}">${escapeHtml(k.temperatura || "-")}</span>
@@ -2152,6 +2175,9 @@ function renderClinicalCard(c) {
       </div>
       ${k.medico_indicado && k.medico_indicado !== "A definir" ? `<p class="muted">${escapeHtml(k.medico_indicado)}</p>` : ""}
       ${k.proxima_acao ? `<p class="card-next">→ ${escapeHtml(k.proxima_acao)}</p>` : ""}
+      <div class="mini-actions">
+        <button type="button" data-action="open-linked-conversation" data-lead-id="${escapeHtml(c.id)}">Abrir conversa</button>
+      </div>
     </article>`;
 }
 
@@ -2170,14 +2196,14 @@ function renderLeadTable(leads) {
             .map(
               (lead) => `
             <tr>
-              <td><div class="cell-main"><span class="avatar sm">${initials(lead.name)}</span>${escapeHtml(lead.name)}</div></td>
+              <td><div class="cell-main"><span class="avatar sm">${initials(lead.name)}</span><button class="link-button" type="button" data-action="open-linked-conversation" data-lead-id="${escapeHtml(lead.id)}">${escapeHtml(lead.name)}</button></div></td>
               <td class="muted">${escapeHtml(lead.phone || "-")}</td>
               <td>${escapeHtml(lead.source || "-")}</td>
               <td class="muted">${escapeHtml(lead.interest || "-")}</td>
               <td><span class="chip ${stageTone(lead.stage)}">${escapeHtml(stageLabel(lead.stage))}</span></td>
               <td class="num"><span class="chip ${scoreTone(lead.score)}">${lead.score || 0}</span></td>
               <td class="num"><strong>${formatMoney(lead.value)}</strong></td>
-              <td><button class="link-button" type="button" data-action="select-lead" data-id="${lead.id}">Detalhe →</button></td>
+              <td><button class="link-button" type="button" data-action="open-linked-conversation" data-lead-id="${escapeHtml(lead.id)}">Conversa →</button></td>
             </tr>`,
             )
             .join("")}
@@ -3476,36 +3502,37 @@ function renderTaskFilters() {
 
 function renderTasksTable(list) {
   if (!list.length) return emptyState("Nenhuma tarefa para os filtros atuais.");
-  const userName = (uid) => (ui.users || []).find((u) => u.id === uid)?.name || "—";
   const now = Date.now();
   return `
-    <div class="data-table-wrap">
-      <table class="data-table">
-        <thead>
-          <tr><th>Título</th><th>Responsável</th><th>Vínculo</th><th>Vencimento</th><th>Status</th><th></th></tr>
-        </thead>
-        <tbody>
-          ${list
-            .map((t) => {
-              const open = t.status !== "DONE" && t.status !== "CANCELED";
-              const overdue = open && t.dueAt && new Date(t.dueAt).getTime() < now;
-              const vinc = t.leadId ? "Lead" : t.patientId ? "Paciente" : "—";
-              return `
-              <tr>
-                <td><strong>${escapeHtml(t.title)}</strong>${t.description ? `<div class="muted">${escapeHtml(t.description)}</div>` : ""}</td>
-                <td class="muted">${escapeHtml(userName(t.assignedToId))}</td>
-                <td class="muted">${vinc}</td>
-                <td class="muted"${overdue ? ' style="color:var(--danger,#dc2626);font-weight:600"' : ""}>${t.dueAt ? escapeHtml(formatDate(t.dueAt)) : "—"}</td>
-                <td><span class="chip ${TASK_STATUS_TONE[t.status] || ""}">${escapeHtml(TASK_STATUS_LABEL[t.status] || t.status)}</span></td>
-                <td>
-                  ${open ? `<button class="link-button" type="button" data-action="task-complete" data-id="${t.id}">Concluir</button>` : ""}
-                  <button class="link-button" type="button" data-action="task-edit" data-id="${t.id}">Editar</button>
-                </td>
-              </tr>`;
-            })
-            .join("")}
-        </tbody>
-      </table>
+    <div class="task-list">
+      ${list
+        .map((t) => {
+          const open = t.status !== "DONE" && t.status !== "CANCELED";
+          const overdue = open && t.dueAt && new Date(t.dueAt).getTime() < now;
+          const linked = t.lead || t.patient || null;
+          const linkKind = t.lead ? "Lead" : t.patient ? "Paciente" : "Sem vinculo";
+          return `
+            <article class="task-item${overdue ? " overdue" : ""}">
+              <div class="task-main">
+                <div class="task-title-row">
+                  <strong>${escapeHtml(t.title)}</strong>
+                  <span class="chip ${TASK_STATUS_TONE[t.status] || ""}">${escapeHtml(TASK_STATUS_LABEL[t.status] || t.status)}</span>
+                </div>
+                ${t.description ? `<p>${escapeHtml(t.description)}</p>` : ""}
+                <div class="task-meta">
+                  <span>${escapeHtml(linkKind)}${linked ? `: ${escapeHtml(linked.name || linked.phone || "-")}` : ""}</span>
+                  <span>Responsavel: ${escapeHtml(t.assignedTo?.name || "—")}</span>
+                  <span class="${overdue ? "task-overdue" : ""}">Vence: ${t.dueAt ? escapeHtml(formatDate(t.dueAt)) : "—"}</span>
+                </div>
+              </div>
+              <div class="task-actions">
+                ${linked ? `<button class="secondary-button" type="button" data-action="open-linked-conversation" data-lead-id="${escapeHtml(t.leadId || "")}" data-patient-id="${escapeHtml(t.patientId || "")}">Abrir conversa</button>` : ""}
+                ${open ? `<button class="ghost-button" type="button" data-action="task-complete" data-id="${t.id}">Concluir</button>` : ""}
+                <button class="ghost-button" type="button" data-action="task-edit" data-id="${t.id}">Editar</button>
+              </div>
+            </article>`;
+        })
+        .join("")}
     </div>`;
 }
 
@@ -3653,7 +3680,7 @@ function renderFunnelCard(l) {
     <article class="lead-card" draggable="true" data-lead-card data-id="${l.id}">
       <div class="lead-card-title">
         <div>
-          <h3>${escapeHtml(l.name)}</h3>
+          <h3><button class="link-button" type="button" data-action="open-linked-conversation" data-lead-id="${escapeHtml(l.id)}">${escapeHtml(l.name)}</button></h3>
           <p>${escapeHtml(l.interest || "—")} · ${escapeHtml(l.source || "—")}</p>
         </div>
         <div class="card-chips">
@@ -3663,6 +3690,7 @@ function renderFunnelCard(l) {
       </div>
       ${l.nextAction ? `<p>${escapeHtml(l.nextAction)}${l.nextActionAt ? ` · ${formatDate(l.nextActionAt)}` : ""}</p>` : ""}
       <div class="mini-actions">
+        <button type="button" data-action="open-linked-conversation" data-lead-id="${escapeHtml(l.id)}">Abrir conversa</button>
         <select data-funnel-select data-id="${l.id}" aria-label="Mover lead">
           ${LEAD_STAGES.map((s) => `<option value="${s}" ${s === l.stage ? "selected" : ""}>${escapeHtml(LEAD_STAGE_LABEL[s])}</option>`).join("")}
         </select>
