@@ -88,6 +88,13 @@ export function faqReply(text, agentState, { careTeam, locations }) {
     return "Os horários variam por médico e unidade. Me conta qual médico ou especialidade você busca e te passo os horários certos.";
   }
 
+  if (has(t, ["metro", "metrô", "estacao", "estação", "transporte publico", "transporte público", "como chego de metro", "como chego de metrô"])) {
+    if (unit === "sp-itaim" || has(t, ["sp", "sao paulo", "itaim"])) {
+      return "Em SP a unidade fica no Itaim Bibi. Vale conferir o melhor trajeto no mapa antes de vir.";
+    }
+    return "Tem metrô perto, sim. A referência mais próxima em Copacabana é a estação Siqueira Campos. Vale conferir o melhor trajeto no mapa antes de vir.";
+  }
+
   if (has(t, ["retorno gratuito", "prazo de retorno", "direito a retorno", "consulta de retorno", "tem retorno"])) {
     return "Sim, toda consulta tem direito a retorno gratuito em até 30 dias.";
   }

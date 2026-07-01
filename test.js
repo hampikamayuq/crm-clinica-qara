@@ -3,6 +3,12 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { buildWhatsAppMessagePayload, guardAgentReply, injectDoctorPresentation, parseAgentJson, polishAgentReply, previewOutboundText } from "./server.js";
 import { faqReply } from "./src/server/services/agent-faq.service.js";
+import {
+  buildHandoffReply,
+  computeAgentMissing,
+  shouldUseFaq,
+} from "./src/server/services/agent-preflight.service.js";
+import { classify } from "./src/server/services/classifier.service.js";
 import { calculateLeadScore, temperatureFromScore } from "./src/server/services/lead-score.service.js";
 
 // Money path: a agente NUNCA pode mandar um valor que nao seja de careTeam.
@@ -36,6 +42,8 @@ test("parseAgentJson extrai JSON cercado por ruido", () => {
 test("polishAgentReply remove aberturas roboticas", () => {
   assert.equal(polishAgentReply("Certo — o que você quer ver antes?"), "O que você quer ver antes?");
   assert.equal(polishAgentReply("Lembro sim — você veio da Doctoralia."), "Você veio da Doctoralia.");
+  assert.equal(polishAgentReply("Perfeito! Qual dia funciona?"), "Qual dia funciona?");
+  assert.equal(polishAgentReply("Recebi o comprovante, obrigada!"), "Obrigada pelo comprovante!");
 });
 
 test("polishAgentReply nao pergunta modalidade em resposta informativa", () => {
@@ -75,6 +83,32 @@ test("faqReply responde horarios por medico sem chamar IA", () => {
   });
   assert.match(out, /Dr\. Miguel Ceccarelli/);
   assert.match(out, /Segundas 14h-20h/);
+});
+
+test("faqReply responde metro sem chamar IA", () => {
+  const out = faqReply("Tem metrô perto?", {}, { locations: {}, careTeam: [] });
+  assert.match(out, /Siqueira Campos/);
+});
+
+test("shouldUseFaq nao intercepta triagem clinica", () => {
+  const classification = classify("Estou com muita queda de cabelo.");
+  assert.equal(shouldUseFaq("Estou com muita queda de cabelo.", {}, classification), false);
+});
+
+test("shouldUseFaq permite pergunta administrativa pura", () => {
+  const classification = classify("Qual o endereço da clínica?");
+  assert.equal(shouldUseFaq("Qual o endereço da clínica?", {}, classification), true);
+});
+
+test("buildHandoffReply personaliza reclamacao", () => {
+  const classification = classify("Fiquei esperando 40 minutos e ninguém me atendeu.");
+  assert.match(buildHandoffReply(classification), /sinto muito/i);
+});
+
+test("computeAgentMissing usa triagem para pular queixa", () => {
+  const classification = classify("Estou com muita queda de cabelo.");
+  const missing = computeAgentMissing({ nome: "Ana" }, classification);
+  assert.deepEqual(missing, ["periodo"]);
 });
 
 test("schema Prisma mantem o escopo CRM completo", () => {
@@ -186,7 +220,7 @@ test("login bloqueia a UI antes de carregar o CRM", () => {
 test("automacao tenta agente antes do bot de regras", () => {
   const server = readFileSync(new URL("./server.js", import.meta.url), "utf8");
   const app = readFileSync(new URL("./app.js", import.meta.url), "utf8");
-  const serverAgent = server.indexOf("const agentResults = await runAgentAutomation(inboundMessage, store);");
+  const serverAgent = server.indexOf("runAgentAutomation(inboundMessage, store");
   const serverBot = server.indexOf("return runBotAutomation(inboundMessage, store);");
   const appAgent = app.indexOf("const agentResult = await runServerAgentForLead(lead, text);");
   const appBot = app.indexOf("const result = agentResult || processBots(lead, text);");

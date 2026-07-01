@@ -4,6 +4,13 @@ import { createServer } from "node:http";
 import { extname, isAbsolute, join, normalize, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { faqReply } from "./src/server/services/agent-faq.service.js";
+import { classify } from "./src/server/services/classifier.service.js";
+import {
+  buildHandoffReply,
+  computeAgentMissing,
+  mergeClassificationState,
+  shouldUseFaq,
+} from "./src/server/services/agent-preflight.service.js";
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 loadEnv();
@@ -725,34 +732,56 @@ function describeAttachments(attachments = []) {
   return attachments.map((attachment) => `[${attachment.type || "anexo"} recebido]`).join(" ");
 }
 
-// Fluxo hibrido: FAQ e IA respondem primeiro; o bot importado fica como fallback.
+// Fluxo hibrido: classificador -> handoff urgente -> FAQ -> IA -> bot de regras.
 async function runAutomations(inboundMessage, store) {
-  // Classifica a mensagem do paciente (best-effort, nao bloqueia a resposta).
-  if (classifyInboundToDb) classifyInboundToDb(inboundMessage).catch(() => {});
-
   const conversation = getConversation(store, inboundMessage.channel, inboundMessage.externalId);
   const agentState = conversation.agentState || {};
+  const collected = { ...(agentState.collected || {}) };
+  if (conversation.name && !collected.nome) collected.nome = conversation.name;
 
-  const faq = faqReply(inboundMessage.text, agentState, { careTeam, locations });
-  if (faq) {
+  const classification = classify(inboundMessage.text, {
+    origem: collected.origem,
+    pacienteAntigo: collected.paciente_antigo,
+    nome: collected.nome,
+    modalidade: collected.modalidade,
+    periodo: collected.periodo,
+    temFoto: inboundMessage.rawType === "image" || /\[imagem|foto|anexo/i.test(inboundMessage.text || ""),
+  });
+  mergeClassificationState(conversation, classification);
+
+  if (classifyInboundToDb) classifyInboundToDb(inboundMessage).catch(() => {});
+
+  if (classification.crm?.precisa_humano_agora) {
+    const reply = buildHandoffReply(classification);
     const result = await sendAndStoreMessage(
-      { channel: inboundMessage.channel, externalId: inboundMessage.externalId, text: faq },
+      { channel: inboundMessage.channel, externalId: inboundMessage.externalId, text: reply },
       store,
-      { automatedBy: "FAQ" },
+      { automatedBy: "Classifier:handoff", actions: [{ type: "handoff_human", value: classification.crm.motivo_alerta || "urgencia" }] },
     );
     return [result];
   }
 
-  const agentResults = await runAgentAutomation(inboundMessage, store);
-  if (agentResults.length) return agentResults;
+  if (shouldUseFaq(inboundMessage.text, agentState, classification)) {
+    const faq = faqReply(inboundMessage.text, conversation.agentState || {}, { careTeam, locations });
+    if (faq) {
+      const result = await sendAndStoreMessage(
+        { channel: inboundMessage.channel, externalId: inboundMessage.externalId, text: faq },
+        store,
+        { automatedBy: "FAQ" },
+      );
+      return [result];
+    }
+  }
 
+  const agentResults = await runAgentAutomation(inboundMessage, store, classification);
+  if (agentResults.length) return agentResults;
 
   return runBotAutomation(inboundMessage, store);
 }
 
-async function runAgentAutomation(inboundMessage, store) {
+async function runAgentAutomation(inboundMessage, store, classification = null) {
   const results = [];
-  const agentResult = await runAgent(inboundMessage, store);
+  const agentResult = await runAgent(inboundMessage, store, classification);
   if (!agentResult?.replies?.length) return results;
 
   for (const reply of agentResult.replies) {
@@ -864,7 +893,7 @@ async function testAgentReply(input) {
   };
 }
 
-async function runAgent(inboundMessage, store) {
+async function runAgent(inboundMessage, store, classification = null) {
   if (aiProvider !== "openai" || !process.env.OPENAI_API_KEY) return null;
 
   const conversation = getConversation(store, inboundMessage.channel, inboundMessage.externalId);
@@ -874,17 +903,22 @@ async function runAgent(inboundMessage, store) {
     content: message.text,
   }));
 
-  // Estado explicito: evita repetir saudacao e re-perguntar o que ja foi coletado.
   const collected = { ...(agentState.collected || {}) };
   if (conversation.name && !collected.nome) collected.nome = conversation.name;
-  const requiredFields = ["nome", "queixa", "periodo"];
-  const faltando = requiredFields.filter((field) => !collected[field]);
+  const faltando = computeAgentMissing(collected, classification);
   const isFirstMessage =
     (conversation.messages || []).filter((message) => message.direction === "outbound").length === 0;
 
-  // Contexto enxuto: remove os textos longos de apresentacao (injetados pelo servidor
-  // via action present_doctor). Mantem dados estruturados que o agente usa para raciocinar.
   const careTeamLite = careTeam.map(({ presentation, presentationSp, ...rest }) => rest);
+  const triage = classification?.crm
+    ? {
+        pipeline: classification.crm.pipeline_funil,
+        medicoIndicado: classification.crm.medico_indicado,
+        prioridade: classification.crm.prioridade,
+        proximaAcao: classification.crm.proxima_acao,
+        precisaHumano: classification.crm.precisa_humano_agora,
+      }
+    : null;
 
   const context = {
     channel: inboundMessage.channel,
@@ -894,6 +928,7 @@ async function runAgent(inboundMessage, store) {
     careTeam: careTeamLite,
     knowledge: clinicKnowledge,
     agentState,
+    triage,
     isFirstMessage,
     coletado: collected,
     faltando,
@@ -919,7 +954,7 @@ async function runAgent(inboundMessage, store) {
       role: "user",
       content: JSON.stringify({
         task:
-          "Analise a conversa e gere a mensagem da Tawany para o WhatsApp seguindo todas as regras de persona, triagem e agendamento. Se precisar, sugira acoes estruturadas. Formato obrigatorio: {\"reply\":\"texto pronto para copiar/colar\", \"actions\":[{\"type\":\"set_stage|set_next_step|set_tag|set_field|present_doctor|handoff_human|save_memory\", \"value\":\"...\"}], \"confidence\":0.0}",
+          "Analise a conversa e gere a mensagem da Tawany para o WhatsApp. Use context.triage quando existir (medico e pipeline ja sugeridos). Peca apenas o proximo item de context.faltando. Formato: {\"reply\":\"texto\", \"actions\":[{\"type\":\"set_stage|set_tag|set_field|present_doctor|handoff_human|save_memory\", \"value\":\"...\"}], \"confidence\":0.0}",
         context,
         conversation: messages,
       }),
@@ -975,13 +1010,18 @@ function guardAgentReply(reply, conversation = null) {
 }
 
 function polishAgentReply(reply, options = {}) {
-  let text = clean(reply).replace(
-    /^(lembro sim|certo|entendi|claro|perfeito|otimo|ótimo)[\s,!.\-—:]+/i,
-    "",
-  );
+  let text = clean(reply);
+  if (/^recebi o comprovante/i.test(text)) return "Obrigada pelo comprovante!";
+  text = text
+    .replace(
+      /^(recebi( o comprovante)?|claro|perfeito|otimo|ótimo|entendido|lembro sim|certo|entendi|obrigad)[\s,!.\-—:]*/i,
+      "",
+    )
+    .replace(/^recebi[\s,!.\-—:]*/i, "");
   const shouldAvoidModality =
     isInfoQuestion(options.inboundText) || wasModalityAlreadyAsked(options.conversation);
   if (shouldAvoidModality) text = stripModalityQuestion(text);
+  if (!text) return clean(reply);
   return text.replace(/^([a-záéíóúãõç])/, (letter) => letter.toUpperCase());
 }
 
@@ -1080,7 +1120,7 @@ async function callOpenAI(messages) {
     response_format: { type: "json_object" },
     messages,
   };
-  if (supportsCustomTemperature) body.temperature = 0.7;
+  if (supportsCustomTemperature) body.temperature = 0.4;
   else body.reasoning_effort = reasoningEffort;
 
   const response = await fetch("https://api.openai.com/v1/chat/completions", {
